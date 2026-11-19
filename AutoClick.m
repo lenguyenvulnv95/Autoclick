@@ -1,5 +1,5 @@
 // AutoClick.m - iOS auto click dylib (tiêm bằng ESign / TrollFools)
-// Đã đối chiếu chuẩn IOHIDEvent (KIF / IOKit headers) & vá lỗi logic vòng lặp / tọa độ / hitTest.
+// Cập nhật: Khóa màn hình ngang, giữ nút Play/Stop 4 giây mở menu, tự động lưu vị trí điểm.
 #import <UIKit/UIKit.h>
 #import <dlfcn.h>
 #import <mach/mach_time.h>
@@ -9,17 +9,13 @@
 
 #define MAXP 10
 
-#pragma mark - IOHIDEvent Constants (Verified against IOHIDEventTypes.h & IOHIDEventFieldDefs.h)
+#pragma mark - IOHIDEvent Constants
 
-// Digitizer Transducer Types
-#define kIOHIDDigitizerTransducerTypeHand   3
+#define kIOHIDDigitizerTransducerTypeHand               3
+#define kIOHIDDigitizerEventRange                       (1 << 0)
+#define kIOHIDDigitizerEventTouch                       (1 << 1)
+#define kIOHIDDigitizerEventPosition                    (1 << 2)
 
-// Digitizer Event Mask
-#define kIOHIDDigitizerEventRange           (1 << 0) // 0x1
-#define kIOHIDDigitizerEventTouch           (1 << 1) // 0x2
-#define kIOHIDDigitizerEventPosition        (1 << 2) // 0x4
-
-// IOHIDEventField definitions: (kIOHIDEventTypeDigitizer = 11 = 0xb) << 16 | field_offset
 #define kIOHIDEventFieldDigitizerX                      0xb0000
 #define kIOHIDEventFieldDigitizerY                      0xb0001
 #define kIOHIDEventFieldDigitizerMajorRadius            0xb0014
@@ -30,20 +26,13 @@
 
 typedef struct __IOHIDEvent *IOHIDEventRef;
 
-// Full 16-parameter signature for IOHIDEventCreateDigitizerEvent
-static IOHIDEventRef (*pCreateDigitizer)(CFAllocatorRef allocator, uint64_t timeStamp, uint32_t transducerType,
-                                         uint32_t index, uint32_t identity, uint32_t eventMask, uint32_t buttonMask,
-                                         double x, double y, double z, double tipPressure, double barrelPressure,
-                                         Boolean range, Boolean touch, uint32_t options);
-
-// 13-parameter signature for IOHIDEventCreateDigitizerFingerEvent
-static IOHIDEventRef (*pCreateFinger)(CFAllocatorRef allocator, uint64_t timeStamp, uint32_t index, uint32_t identity,
-                                      uint32_t eventMask, double x, double y, double z, double tipPressure,
-                                      double twist, Boolean range, Boolean touch, uint32_t options);
-
-static void (*pAppend)(IOHIDEventRef parent, IOHIDEventRef child, uint32_t options);
-static void (*pSetInt)(IOHIDEventRef event, uint32_t field, int value);
-static void (*pSetFloat)(IOHIDEventRef event, uint32_t field, double value);
+static IOHIDEventRef (*pCreateDigitizer)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
+                                         double, double, double, double, double, Boolean, Boolean, uint32_t);
+static IOHIDEventRef (*pCreateFinger)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t,
+                                      double, double, double, double, double, Boolean, Boolean, uint32_t);
+static void (*pAppend)(IOHIDEventRef, IOHIDEventRef, uint32_t);
+static void (*pSetInt)(IOHIDEventRef, uint32_t, int);
+static void (*pSetFloat)(IOHIDEventRef, uint32_t, double);
 
 @interface UITouch (ACPrivate)
 - (void)setWindow:(UIWindow *)w;
@@ -97,7 +86,6 @@ static IOHIDEventRef MakeHID(UITouchPhase phase, CGPoint windowPoint, UIWindow *
         ? kIOHIDDigitizerEventPosition
         : (kIOHIDDigitizerEventRange | kIOHIDDigitizerEventTouch);
 
-    // Normalize coordinates (0.0 -> 1.0) for IOHIDEvent compatibility across iOS 12-18+
     CGSize screenBounds = UIScreen.mainScreen.bounds.size;
     CGPoint screenPt = [window convertPoint:windowPoint toWindow:nil];
     double normX = (screenBounds.width > 0) ? (screenPt.x / screenBounds.width) : screenPt.x;
@@ -110,7 +98,6 @@ static IOHIDEventRef MakeHID(UITouchPhase phase, CGPoint windowPoint, UIWindow *
                                           0.0, 0.0,
                                           NO, touching, 0);
     if (!hand) return NULL;
-
     pSetInt(hand, kIOHIDEventFieldDigitizerIsDisplayIntegrated, 1);
 
     IOHIDEventRef finger = pCreateFinger(kCFAllocatorDefault, ts,
@@ -130,7 +117,6 @@ static IOHIDEventRef MakeHID(UITouchPhase phase, CGPoint windowPoint, UIWindow *
 static UIWindow *TargetWindow(void) {
     UIWindow *best = nil;
     NSMutableArray<UIWindow *> *winList = [NSMutableArray array];
-
     if (@available(iOS 13.0, *)) {
         for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
             if ([scene isKindOfClass:UIWindowScene.class] &&
@@ -147,7 +133,6 @@ static UIWindow *TargetWindow(void) {
 
     for (UIWindow *w in winList) {
         if (w == gOverlay || w.hidden || w.alpha < 0.01) continue;
-        // Bỏ qua các cửa sổ bàn phím hoặc alert hệ thống nếu không cần thiết
         if ([NSStringFromClass(w.class) hasPrefix:@"UIRemoteKeyboard"] ||
             [NSStringFromClass(w.class) hasPrefix:@"UITextEffects"]) continue;
         if (w.isKeyWindow) return w;
@@ -168,7 +153,6 @@ static void SendTouch(UITouch *t, UITouchPhase phase, CGPoint p, UIWindow *w) {
     if (![UIApplication.sharedApplication respondsToSelector:@selector(_touchesEvent)]) return;
     UIEvent *ev = [UIApplication.sharedApplication _touchesEvent];
     if (!ev) return;
-
     if ([ev respondsToSelector:@selector(_clearTouches)]) [ev _clearTouches];
 
     IOHIDEventRef hid = MakeHID(phase, p, w);
@@ -177,7 +161,6 @@ static void SendTouch(UITouch *t, UITouchPhase phase, CGPoint p, UIWindow *w) {
         if ([ev respondsToSelector:@selector(_setHIDEvent:)]) [ev _setHIDEvent:hid];
         CFRelease(hid);
     }
-
     if ([ev respondsToSelector:@selector(_addTouch:forDelayedDelivery:)]) {
         [ev _addTouch:t forDelayedDelivery:NO];
     }
@@ -189,7 +172,6 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
     UIWindow *w = TargetWindow();
     if (!w) return;
 
-    // Quy đổi tọa độ từ gOverlay sang cửa sổ đích của App
     CGPoint winPoint = gOverlay ? [w convertPoint:screenPoint fromWindow:gOverlay] : screenPoint;
     UIView *v = [w hitTest:winPoint withEvent:nil];
     if (!v) v = w;
@@ -204,13 +186,12 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
     if ([t respondsToSelector:@selector(setGestureView:)]) [t setGestureView:v];
 
     SendTouch(t, UITouchPhaseBegan, winPoint, w);
-
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(hold * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         SendTouch(t, UITouchPhaseEnded, winPoint, w);
     });
 }
 
-#pragma mark - Overlay Window (Touch Pass-Through)
+#pragma mark - Overlay Window
 
 @interface ACWindow : UIWindow
 @end
@@ -222,7 +203,7 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
     return v;
 }
 - (BOOL)_canBecomeKeyWindow {
-    return NO; // Tuyệt đối không cướp keyWindow của game/app
+    return NO;
 }
 @end
 
@@ -230,7 +211,7 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
 
 @interface ACController : UIViewController {
     UIView *_hub, *_panel;
-    UIButton *_play, *_gear;
+    UIButton *_play;
     UIScrollView *_scroll;
     NSMutableArray<UILabel *> *_markers;
     NSMutableDictionary<NSNumber *, UIStepper *> *_steppers;
@@ -240,13 +221,27 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
     int _count, _hold, _loops, _delay[MAXP];
     double _px[MAXP], _py[MAXP];
     CGPoint _hubPos;
+    UILongPressGestureRecognizer *_longPress;
 }
 @end
 
 @implementation ACController
 
+// Cố định hướng màn hình ngang (Landscape)
+- (BOOL)shouldAutorotate {
+    return YES;
+}
+
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations {
+    return UIInterfaceOrientationMaskLandscape;
+}
+
+- (UIInterfaceOrientation)preferredInterfaceOrientationForPresentation {
+    return UIInterfaceOrientationLandscapeRight;
+}
+
 - (void)loadDefaults {
-    _count = 3; _hold = 50; _loops = 0; _hubPos = CGPointMake(20, 90);
+    _count = 3; _hold = 50; _loops = 0; _hubPos = CGPointMake(40, 90);
     for (int i = 0; i < MAXP; i++) {
         _delay[i] = 500;
         _px[i] = 0.75;
@@ -262,9 +257,9 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
     }
     NSArray *dl = d[@"delay"], *x = d[@"x"], *y = d[@"y"];
     for (int i = 0; i < MAXP; i++) {
-        if (i < dl.count) _delay[i] = MAX(0, [dl[i] intValue]);
-        if (i < x.count)  _px[i] = MIN(1.0, MAX(0.0, [x[i] doubleValue]));
-        if (i < y.count)  _py[i] = MIN(1.0, MAX(0.0, [y[i] doubleValue]));
+        if ((NSUInteger)i < dl.count) _delay[i] = MAX(0, [dl[i] intValue]);
+        if ((NSUInteger)i < x.count)  _px[i] = MIN(1.0, MAX(0.0, [x[i] doubleValue]));
+        if ((NSUInteger)i < y.count)  _py[i] = MIN(1.0, MAX(0.0, [y[i] doubleValue]));
     }
 }
 
@@ -301,10 +296,10 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
     [self refreshAll];
 }
 
-#pragma mark Hub
+#pragma mark Hub & Long Press Menu (4s)
 
 - (void)buildHub {
-    _hub = [[UIView alloc] initWithFrame:CGRectMake(_hubPos.x, _hubPos.y, 100, 50)];
+    _hub = [[UIView alloc] initWithFrame:CGRectMake(_hubPos.x, _hubPos.y, 50, 50)];
     _hub.backgroundColor = [UIColor colorWithWhite:0 alpha:0.65];
     _hub.layer.cornerRadius = 25;
     _hub.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.25].CGColor;
@@ -316,22 +311,29 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
     _play.titleLabel.font = [UIFont systemFontOfSize:18 weight:UIFontWeightBold];
     [_play addTarget:self action:@selector(togglePlay) forControlEvents:UIControlEventTouchUpInside];
 
-    _gear = [UIButton buttonWithType:UIButtonTypeCustom];
-    _gear.frame = CGRectMake(55, 5, 40, 40);
-    _gear.layer.cornerRadius = 20;
-    _gear.backgroundColor = [UIColor colorWithWhite:0.3 alpha:1];
-    _gear.titleLabel.font = [UIFont systemFontOfSize:20];
-    [_gear setTitle:@"⚙" forState:UIControlStateNormal];
-    [_gear addTarget:self action:@selector(toggleMenu) forControlEvents:UIControlEventTouchUpInside];
+    // Nhấn giữ 4 giây trên nút Play/Stop để mở/đóng menu cài đặt
+    _longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handleLongPress:)];
+    _longPress.minimumPressDuration = 4.0;
+    _longPress.allowableMovement = 15.0;
+    [_play addGestureRecognizer:_longPress];
 
     [_hub addSubview:_play];
-    [_hub addSubview:_gear];
     [_hub addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(panHub:)]];
     [self.view addSubview:_hub];
 }
 
+- (void)handleLongPress:(UILongPressGestureRecognizer *)g {
+    if (g.state == UIGestureRecognizerStateBegan) {
+        _menuOpen = !_menuOpen;
+        [self refreshAll];
+        if (@available(iOS 10.0, *)) {
+            UIImpactFeedbackGenerator *feed = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+            [feed impactOccurred];
+        }
+    }
+}
+
 - (void)refreshPlayButton {
-    // Theo đặc tả plan.md: Đang chạy = xanh lá + ▶ | Đã dừng = đỏ + ■
     if (_running) {
         _play.backgroundColor = [UIColor colorWithRed:0.1 green:0.75 blue:0.2 alpha:1];
         [_play setTitle:@"▶" forState:UIControlStateNormal];
@@ -346,20 +348,17 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
     [g setTranslation:CGPointZero inView:self.view];
     CGRect b = self.view.bounds;
     CGPoint c = CGPointMake(_hub.center.x + tr.x, _hub.center.y + tr.y);
-    c.x = MIN(MAX(c.x, 50), b.size.width - 50);
-    c.y = MIN(MAX(c.y, 25), b.size.height - 25);
+    c.x = MIN(MAX(c.x, 25), MAX(25, b.size.width - 25));
+    c.y = MIN(MAX(c.y, 25), MAX(25, b.size.height - 25));
     _hub.center = c;
     _hubPos = _hub.frame.origin;
     [self layoutPanel];
-    if (g.state == UIGestureRecognizerStateEnded) [self save];
+    if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) {
+        [self save];
+    }
 }
 
-- (void)toggleMenu {
-    _menuOpen = !_menuOpen;
-    [self refreshAll];
-}
-
-#pragma mark Markers (1..10)
+#pragma mark Markers (1..10) - Tự động lưu vị trí khi kéo thả
 
 - (void)buildMarkers {
     for (int i = 0; i < MAXP; i++) {
@@ -398,20 +397,22 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
     m.center = c;
     _px[i] = c.x / b.width;
     _py[i] = c.y / b.height;
-    if (g.state == UIGestureRecognizerStateEnded) [self save];
+    if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) {
+        [self save];
+    }
 }
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
+    CGRect b = self.view.bounds;
+    if (b.size.width <= 0 || b.size.height <= 0) return;
     for (int i = 0; i < MAXP; i++) {
         _markers[i].center = [self pointForIndex:i];
     }
-    CGRect b = self.view.bounds;
     CGRect f = _hub.frame;
-    f.origin.x = MIN(MAX(f.origin.x, 0), MAX(0, b.size.width - f.size.width));
-    f.origin.y = MIN(MAX(f.origin.y, 0), MAX(0, b.size.height - f.size.height));
+    f.origin.x = MIN(MAX(_hubPos.x, 0), MAX(0, b.size.width - f.size.width));
+    f.origin.y = MIN(MAX(_hubPos.y, 0), MAX(0, b.size.height - f.size.height));
     _hub.frame = f;
-    _hubPos = f.origin;
     [self layoutPanel];
 }
 
@@ -483,7 +484,7 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
 
 - (void)layoutPanel {
     CGRect b = self.view.bounds, f = _panel.frame;
-    f.size.height = MIN(420, MAX(180, b.size.height - 120));
+    f.size.height = MIN(420, MAX(180, b.size.height - 80));
     _scroll.frame = CGRectMake(0, 36, 300, f.size.height - 36);
     f.origin.x = MIN(MAX(_hub.frame.origin.x, 8), MAX(8, b.size.width - 300 - 8));
     CGFloat below = CGRectGetMaxY(_hub.frame) + 8;
@@ -562,7 +563,6 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
     }
     int idx = i;
     int loopsDone = n;
-    // Đảm bảo khoảng chờ tối thiểu 10ms để tránh treo Main Thread khi người dùng chỉnh delay = 0ms
     int waitMs = MAX(10, _delay[idx]);
     double holdSec = _hold / 1000.0;
 
@@ -580,7 +580,6 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
                 m.transform = CGAffineTransformIdentity;
             }];
         }
-        // Chờ nhấn giữ hoàn tất (holdSec) rồi mới chuyển sang bước kế tiếp để không chồng chéo UITouch
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(holdSec * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             [self stepToken:tok index:idx + 1 loops:loopsDone];
@@ -611,7 +610,7 @@ static void ACSetup(void) {
     w.windowLevel = UIWindowLevelAlert + 100;
     w.backgroundColor = UIColor.clearColor;
     w.rootViewController = [[ACController alloc] init];
-    w.hidden = NO; // Không gọi makeKeyAndVisible để giữ nguyên keyWindow của app
+    w.hidden = NO;
     gOverlay = w;
 }
 
