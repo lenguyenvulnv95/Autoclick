@@ -1,8 +1,15 @@
 // AutoClick.m - iOS auto click dylib (tiêm bằng ESign / TrollFools)
-// Cập nhật: Khóa màn hình ngang, giữ nút Play/Stop 4 giây mở menu, tự động lưu vị trí điểm.
+// Phiên bản v3 - Đã vá các lỗi runtime:
+// 1. Khóa màn hình ngang (Landscape)
+// 2. Chạm 3 ngón tay 3 lần bất kỳ trên màn hình để mở/đóng menu (lọc chạm hủy & chạm xen giữa)
+// 3. Thêm 2 chế độ Play/Stop trên đầu menu: Chạm bật/tắt & Giữ để chạy (thả ra dừng)
+// 4. Bảo toàn chạm thật khi inject touch (sửa lỗi văng/kẹt ở Chế độ 2)
+// 5. Chống kích hoạt nhầm khi kéo Hub lúc mở menu ở Chế độ 2
+// 6. Tự động lưu vị trí các điểm, vị trí Hub và chế độ chạy
 #import <UIKit/UIKit.h>
 #import <dlfcn.h>
 #import <mach/mach_time.h>
+#import <objc/runtime.h>
 
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 #pragma clang diagnostic ignored "-Wincomplete-implementation"
@@ -11,10 +18,10 @@
 
 #pragma mark - IOHIDEvent Constants
 
-#define kIOHIDDigitizerTransducerTypeHand               3
-#define kIOHIDDigitizerEventRange                       (1 << 0)
-#define kIOHIDDigitizerEventTouch                       (1 << 1)
-#define kIOHIDDigitizerEventPosition                    (1 << 2)
+#define kIOHIDDigitizerTransducerTypeHand   3
+#define kIOHIDDigitizerEventRange           (1 << 0)
+#define kIOHIDDigitizerEventTouch           (1 << 1)
+#define kIOHIDDigitizerEventPosition        (1 << 2)
 
 #define kIOHIDEventFieldDigitizerX                      0xb0000
 #define kIOHIDEventFieldDigitizerY                      0xb0001
@@ -26,10 +33,8 @@
 
 typedef struct __IOHIDEvent *IOHIDEventRef;
 
-static IOHIDEventRef (*pCreateDigitizer)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
-                                         double, double, double, double, double, Boolean, Boolean, uint32_t);
-static IOHIDEventRef (*pCreateFinger)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t,
-                                      double, double, double, double, double, Boolean, Boolean, uint32_t);
+static IOHIDEventRef (*pCreateDigitizer)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, double, double, double, double, double, Boolean, Boolean, uint32_t);
+static IOHIDEventRef (*pCreateFinger)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, double, double, double, double, double, Boolean, Boolean, uint32_t);
 static void (*pAppend)(IOHIDEventRef, IOHIDEventRef, uint32_t);
 static void (*pSetInt)(IOHIDEventRef, uint32_t, int);
 static void (*pSetFloat)(IOHIDEventRef, uint32_t, double);
@@ -58,9 +63,12 @@ static void (*pSetFloat)(IOHIDEventRef, uint32_t, double);
 - (UIEvent *)_touchesEvent;
 @end
 
-#pragma mark - Touch Injection Engine
-
+@class ACController;
 static UIWindow *gOverlay = nil;
+static __weak ACController *gController = nil;
+static BOOL gIsInjectingTouch = NO;
+
+#pragma mark - Touch Injection Engine
 
 static BOOL LoadIOKit(void) {
     static BOOL ok = NO;
@@ -82,29 +90,18 @@ static IOHIDEventRef MakeHID(UITouchPhase phase, CGPoint windowPoint, UIWindow *
     uint64_t ts = mach_absolute_time();
     BOOL touching = (phase == UITouchPhaseBegan || phase == UITouchPhaseMoved || phase == UITouchPhaseStationary);
     uint32_t handMask = (phase == UITouchPhaseMoved) ? kIOHIDDigitizerEventPosition : kIOHIDDigitizerEventTouch;
-    uint32_t fingerMask = (phase == UITouchPhaseMoved)
-        ? kIOHIDDigitizerEventPosition
-        : (kIOHIDDigitizerEventRange | kIOHIDDigitizerEventTouch);
+    uint32_t fingerMask = (phase == UITouchPhaseMoved) ? kIOHIDDigitizerEventPosition : (kIOHIDDigitizerEventRange | kIOHIDDigitizerEventTouch);
 
     CGSize screenBounds = UIScreen.mainScreen.bounds.size;
     CGPoint screenPt = [window convertPoint:windowPoint toWindow:nil];
     double normX = (screenBounds.width > 0) ? (screenPt.x / screenBounds.width) : screenPt.x;
     double normY = (screenBounds.height > 0) ? (screenPt.y / screenBounds.height) : screenPt.y;
 
-    IOHIDEventRef hand = pCreateDigitizer(kCFAllocatorDefault, ts,
-                                          kIOHIDDigitizerTransducerTypeHand,
-                                          0, 0, handMask, 0,
-                                          normX, normY, 0.0,
-                                          0.0, 0.0,
-                                          NO, touching, 0);
+    IOHIDEventRef hand = pCreateDigitizer(kCFAllocatorDefault, ts, kIOHIDDigitizerTransducerTypeHand, 0, 0, handMask, 0, normX, normY, 0.0, 0.0, 0.0, NO, touching, 0);
     if (!hand) return NULL;
     pSetInt(hand, kIOHIDEventFieldDigitizerIsDisplayIntegrated, 1);
 
-    IOHIDEventRef finger = pCreateFinger(kCFAllocatorDefault, ts,
-                                         1, 2, fingerMask,
-                                         normX, normY, 0.0,
-                                         touching ? 1.0 : 0.0, 0.0,
-                                         touching, touching, 0);
+    IOHIDEventRef finger = pCreateFinger(kCFAllocatorDefault, ts, 1, 2, fingerMask, normX, normY, 0.0, touching ? 1.0 : 0.0, 0.0, touching, touching, 0);
     if (finger) {
         pSetFloat(finger, kIOHIDEventFieldDigitizerMajorRadius, 5.0);
         pSetFloat(finger, kIOHIDEventFieldDigitizerMinorRadius, 5.0);
@@ -119,22 +116,17 @@ static UIWindow *TargetWindow(void) {
     NSMutableArray<UIWindow *> *winList = [NSMutableArray array];
     if (@available(iOS 13.0, *)) {
         for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-            if ([scene isKindOfClass:UIWindowScene.class] &&
-                (scene.activationState == UISceneActivationStateForegroundActive ||
-                 scene.activationState == UISceneActivationStateForegroundInactive)) {
+            if ([scene isKindOfClass:UIWindowScene.class] && (scene.activationState == UISceneActivationStateForegroundActive || scene.activationState == UISceneActivationStateForegroundInactive)) {
                 UIWindowScene *ws = (UIWindowScene *)scene;
                 [winList addObjectsFromArray:ws.windows];
             }
         }
     }
-    if (winList.count == 0) {
-        [winList addObjectsFromArray:UIApplication.sharedApplication.windows];
-    }
+    if (winList.count == 0) [winList addObjectsFromArray:UIApplication.sharedApplication.windows];
 
     for (UIWindow *w in winList) {
         if (w == gOverlay || w.hidden || w.alpha < 0.01) continue;
-        if ([NSStringFromClass(w.class) hasPrefix:@"UIRemoteKeyboard"] ||
-            [NSStringFromClass(w.class) hasPrefix:@"UITextEffects"]) continue;
+        if ([NSStringFromClass(w.class) hasPrefix:@"UIRemoteKeyboard"] || [NSStringFromClass(w.class) hasPrefix:@"UITextEffects"]) continue;
         if (w.isKeyWindow) return w;
         if (w.windowLevel == UIWindowLevelNormal) best = w;
         else if (!best) best = w;
@@ -149,10 +141,19 @@ static void SendTouch(UITouch *t, UITouchPhase phase, CGPoint p, UIWindow *w) {
     if ([t respondsToSelector:@selector(_setLocationInWindow:resetPrevious:)]) {
         [t _setLocationInWindow:p resetPrevious:(phase == UITouchPhaseBegan)];
     }
-
     if (![UIApplication.sharedApplication respondsToSelector:@selector(_touchesEvent)]) return;
     UIEvent *ev = [UIApplication.sharedApplication _touchesEvent];
     if (!ev) return;
+
+    // Lưu tạm các ngón tay thật đang giữ trên màn hình (ví dụ đang giữ nút Play/Stop ở Chế độ 2)
+    NSMutableArray<UITouch *> *savedRealTouches = [NSMutableArray array];
+    NSSet<UITouch *> *currentTouches = [ev allTouches];
+    for (UITouch *existing in currentTouches) {
+        if (existing != t && (existing.phase == UITouchPhaseBegan || existing.phase == UITouchPhaseMoved || existing.phase == UITouchPhaseStationary)) {
+            [savedRealTouches addObject:existing];
+        }
+    }
+
     if ([ev respondsToSelector:@selector(_clearTouches)]) [ev _clearTouches];
 
     IOHIDEventRef hid = MakeHID(phase, p, w);
@@ -161,10 +162,21 @@ static void SendTouch(UITouch *t, UITouchPhase phase, CGPoint p, UIWindow *w) {
         if ([ev respondsToSelector:@selector(_setHIDEvent:)]) [ev _setHIDEvent:hid];
         CFRelease(hid);
     }
-    if ([ev respondsToSelector:@selector(_addTouch:forDelayedDelivery:)]) {
-        [ev _addTouch:t forDelayedDelivery:NO];
-    }
+    if ([ev respondsToSelector:@selector(_addTouch:forDelayedDelivery:)]) [ev _addTouch:t forDelayedDelivery:NO];
+
+    gIsInjectingTouch = YES;
     [UIApplication.sharedApplication sendEvent:ev];
+    gIsInjectingTouch = NO;
+
+    // Khôi phục lại các ngón tay thật đang giữ để không làm ngắt sự kiện TouchUp/TouchCancel
+    if (savedRealTouches.count > 0) {
+        if ([ev respondsToSelector:@selector(_clearTouches)]) [ev _clearTouches];
+        if ([ev respondsToSelector:@selector(_addTouch:forDelayedDelivery:)]) {
+            for (UITouch *real in savedRealTouches) {
+                [ev _addTouch:real forDelayedDelivery:NO];
+            }
+        }
+    }
 }
 
 static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
@@ -195,16 +207,13 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
 
 @interface ACWindow : UIWindow
 @end
-
 @implementation ACWindow
 - (UIView *)hitTest:(CGPoint)pt withEvent:(UIEvent *)e {
     UIView *v = [super hitTest:pt withEvent:e];
     if (v == self || v == self.rootViewController.view) return nil;
     return v;
 }
-- (BOOL)_canBecomeKeyWindow {
-    return NO;
-}
+- (BOOL)_canBecomeKeyWindow { return NO; }
 @end
 
 #pragma mark - Controller & UI
@@ -212,36 +221,31 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
 @interface ACController : UIViewController {
     UIView *_hub, *_panel;
     UIButton *_play;
+    UIButton *_modeTapBtn, *_modeHoldBtn;
+    UIPanGestureRecognizer *_hubPan;
     UIScrollView *_scroll;
     NSMutableArray<UILabel *> *_markers;
     NSMutableDictionary<NSNumber *, UIStepper *> *_steppers;
     NSMutableDictionary<NSNumber *, UILabel *> *_vals, *_titles;
     BOOL _running, _menuOpen;
     NSUInteger _token;
+    int _runMode; // 0 = Chạm bật / Chạm tắt | 1 = Giữ để chạy / Thả ra dừng
     int _count, _hold, _loops, _delay[MAXP];
     double _px[MAXP], _py[MAXP];
     CGPoint _hubPos;
-    UILongPressGestureRecognizer *_longPress;
 }
+- (void)toggleMenu;
 @end
 
 @implementation ACController
 
-// Cố định hướng màn hình ngang (Landscape)
-- (BOOL)shouldAutorotate {
-    return YES;
-}
-
-- (UIInterfaceOrientationMask)supportedInterfaceOrientations {
-    return UIInterfaceOrientationMaskLandscape;
-}
-
-- (UIInterfaceOrientation)preferredInterfaceOrientationForPresentation {
-    return UIInterfaceOrientationLandscapeRight;
-}
+// Cố định màn hình ngang (Landscape)
+- (BOOL)shouldAutorotate { return YES; }
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations { return UIInterfaceOrientationMaskLandscape; }
+- (UIInterfaceOrientation)preferredInterfaceOrientationForPresentation { return UIInterfaceOrientationLandscapeRight; }
 
 - (void)loadDefaults {
-    _count = 3; _hold = 50; _loops = 0; _hubPos = CGPointMake(40, 90);
+    _runMode = 0; _count = 3; _hold = 50; _loops = 0; _hubPos = CGPointMake(40, 90);
     for (int i = 0; i < MAXP; i++) {
         _delay[i] = 500;
         _px[i] = 0.75;
@@ -249,9 +253,10 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
     }
     NSDictionary *d = [NSUserDefaults.standardUserDefaults dictionaryForKey:@"AC_cfg"];
     if (!d) return;
-    if (d[@"count"]) _count = MAX(1, MIN(MAXP, [d[@"count"] intValue]));
-    if (d[@"hold"])  _hold  = MAX(10, MIN(2000, [d[@"hold"] intValue]));
-    if (d[@"loops"]) _loops = MAX(0, MIN(999, [d[@"loops"] intValue]));
+    if (d[@"runMode"]) _runMode = ([d[@"runMode"] intValue] == 1) ? 1 : 0;
+    if (d[@"count"])   _count   = MAX(1, MIN(MAXP, [d[@"count"] intValue]));
+    if (d[@"hold"])    _hold    = MAX(10, MIN(2000, [d[@"hold"] intValue]));
+    if (d[@"loops"])   _loops   = MAX(0, MIN(999, [d[@"loops"] intValue]));
     if (d[@"hx"] && d[@"hy"]) {
         _hubPos = CGPointMake([d[@"hx"] doubleValue], [d[@"hy"] doubleValue]);
     }
@@ -271,19 +276,21 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
         [y addObject:@(_py[i])];
     }
     [NSUserDefaults.standardUserDefaults setObject:@{
-        @"count": @(_count),
-        @"hold":  @(_hold),
-        @"loops": @(_loops),
-        @"hx":    @(_hubPos.x),
-        @"hy":    @(_hubPos.y),
-        @"delay": dl,
-        @"x":     x,
-        @"y":     y
+        @"runMode": @(_runMode),
+        @"count":   @(_count),
+        @"hold":    @(_hold),
+        @"loops":   @(_loops),
+        @"hx":      @(_hubPos.x),
+        @"hy":      @(_hubPos.y),
+        @"delay":   dl,
+        @"x":       x,
+        @"y":       y
     } forKey:@"AC_cfg"];
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+    gController = self;
     self.view.backgroundColor = UIColor.clearColor;
     [self loadDefaults];
     _markers  = [NSMutableArray array];
@@ -296,7 +303,7 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
     [self refreshAll];
 }
 
-#pragma mark Hub & Long Press Menu (4s)
+#pragma mark Hub & Play/Stop Modes
 
 - (void)buildHub {
     _hub = [[UIView alloc] initWithFrame:CGRectMake(_hubPos.x, _hubPos.y, 50, 50)];
@@ -309,27 +316,52 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
     _play.frame = CGRectMake(5, 5, 40, 40);
     _play.layer.cornerRadius = 20;
     _play.titleLabel.font = [UIFont systemFontOfSize:18 weight:UIFontWeightBold];
-    [_play addTarget:self action:@selector(togglePlay) forControlEvents:UIControlEventTouchUpInside];
 
-    // Nhấn giữ 4 giây trên nút Play/Stop để mở/đóng menu cài đặt
-    _longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handleLongPress:)];
-    _longPress.minimumPressDuration = 4.0;
-    _longPress.allowableMovement = 15.0;
-    [_play addGestureRecognizer:_longPress];
+    // Gắn sự kiện cho cả 2 chế độ: Chạm bật/tắt và Giữ để chạy
+    [_play addTarget:self action:@selector(playTouchDown) forControlEvents:UIControlEventTouchDown];
+    [_play addTarget:self action:@selector(playTouchUpInside) forControlEvents:UIControlEventTouchUpInside];
+    [_play addTarget:self action:@selector(playTouchUpOutside) forControlEvents:UIControlEventTouchUpOutside | UIControlEventTouchCancel];
 
     [_hub addSubview:_play];
-    [_hub addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(panHub:)]];
+    _hubPan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(panHub:)];
+    _hubPan.cancelsTouchesInView = YES;
+    [_hub addGestureRecognizer:_hubPan];
     [self.view addSubview:_hub];
 }
 
-- (void)handleLongPress:(UILongPressGestureRecognizer *)g {
-    if (g.state == UIGestureRecognizerStateBegan) {
-        _menuOpen = !_menuOpen;
-        [self refreshAll];
-        if (@available(iOS 10.0, *)) {
-            UIImpactFeedbackGenerator *feed = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
-            [feed impactOccurred];
-        }
+- (void)toggleMenu {
+    _menuOpen = !_menuOpen;
+    if (_menuOpen && _runMode == 1 && _running) {
+        [self stop];
+    }
+    [self refreshAll];
+    if (@available(iOS 10.0, *)) {
+        UIImpactFeedbackGenerator *feed = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+        [feed impactOccurred];
+    }
+}
+
+- (void)playTouchDown {
+    // Ở Chế độ 2, không tự kích hoạt chạy khi đang mở menu để người dùng kéo dời vị trí Hub thoải mái
+    if (_runMode == 1 && !_menuOpen) {
+        [self start];
+    }
+}
+
+- (void)playTouchUpInside {
+    if (_runMode == 0) {
+        // Chế độ 1: Chạm bật / Chạm tắt
+        [self togglePlay];
+    } else {
+        // Chế độ 2: Thả tay ra là dừng
+        [self stop];
+    }
+}
+
+- (void)playTouchUpOutside {
+    if (_runMode == 1) {
+        // Chế độ 2: Trượt tay ra ngoài hoặc bị hủy chạm cũng dừng ngay
+        [self stop];
     }
 }
 
@@ -344,18 +376,19 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
 }
 
 - (void)panHub:(UIPanGestureRecognizer *)g {
+    if (g.state == UIGestureRecognizerStateBegan && _runMode == 1 && _running) {
+        [self stop];
+    }
     CGPoint tr = [g translationInView:self.view];
     [g setTranslation:CGPointZero inView:self.view];
     CGRect b = self.view.bounds;
     CGPoint c = CGPointMake(_hub.center.x + tr.x, _hub.center.y + tr.y);
-    c.x = MIN(MAX(c.x, 25), MAX(25, b.size.width - 25));
-    c.y = MIN(MAX(c.y, 25), MAX(25, b.size.height - 25));
+    c.x = MIN(MAX(c.x, 25), b.size.width - 25);
+    c.y = MIN(MAX(c.y, 25), b.size.height - 25);
     _hub.center = c;
     _hubPos = _hub.frame.origin;
     [self layoutPanel];
-    if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) {
-        [self save];
-    }
+    if (g.state == UIGestureRecognizerStateEnded) [self save];
 }
 
 #pragma mark Markers (1..10) - Tự động lưu vị trí khi kéo thả
@@ -392,37 +425,60 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
     [g setTranslation:CGPointZero inView:self.view];
     CGSize b = self.view.bounds.size;
     if (b.width <= 0 || b.height <= 0) return;
-    CGPoint c = CGPointMake(MIN(MAX(m.center.x + tr.x, 0), b.width),
-                            MIN(MAX(m.center.y + tr.y, 0), b.height));
+    CGPoint c = CGPointMake(MIN(MAX(m.center.x + tr.x, 0), b.width), MIN(MAX(m.center.y + tr.y, 0), b.height));
     m.center = c;
     _px[i] = c.x / b.width;
     _py[i] = c.y / b.height;
-    if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) {
+    if (g.state == UIGestureRecognizerStateEnded) {
         [self save];
     }
 }
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
-    CGRect b = self.view.bounds;
-    if (b.size.width <= 0 || b.size.height <= 0) return;
     for (int i = 0; i < MAXP; i++) {
         _markers[i].center = [self pointForIndex:i];
     }
+    CGRect b = self.view.bounds;
     CGRect f = _hub.frame;
-    f.origin.x = MIN(MAX(_hubPos.x, 0), MAX(0, b.size.width - f.size.width));
-    f.origin.y = MIN(MAX(_hubPos.y, 0), MAX(0, b.size.height - f.size.height));
+    f.origin.x = MIN(MAX(f.origin.x, 0), MAX(0, b.size.width - f.size.width));
+    f.origin.y = MIN(MAX(f.origin.y, 0), MAX(0, b.size.height - f.size.height));
     _hub.frame = f;
+    _hubPos = f.origin;
     [self layoutPanel];
 }
 
 #pragma mark Panel (Cài đặt)
 
+- (UIButton *)makeModeButtonAtY:(CGFloat)y tag:(int)tag title:(NSString *)title {
+    UIButton *btn = [UIButton buttonWithType:UIButtonTypeCustom];
+    btn.frame = CGRectMake(12, y, 276, 36);
+    btn.tag = tag;
+    btn.layer.cornerRadius = 8;
+    btn.layer.borderWidth = 1.0;
+    btn.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
+    btn.contentEdgeInsets = UIEdgeInsetsMake(0, 10, 0, 10);
+    btn.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
+    btn.titleLabel.adjustsFontSizeToFitWidth = YES;
+    [btn setTitle:title forState:UIControlStateNormal];
+    [btn addTarget:self action:@selector(selectMode:) forControlEvents:UIControlEventTouchUpInside];
+    [_scroll addSubview:btn];
+    return btn;
+}
+
+- (void)selectMode:(UIButton *)btn {
+    int newMode = (int)btn.tag;
+    if (_runMode != newMode) {
+        if (_running) [self stop];
+        _runMode = newMode;
+        [self save];
+        [self refreshAll];
+    }
+}
+
 - (UIStepper *)addRowAtY:(CGFloat)y tag:(int)tag title:(NSString *)title min:(double)mn max:(double)mx step:(double)st value:(double)v {
     UILabel *t = [[UILabel alloc] initWithFrame:CGRectMake(12, y, 125, 44)];
-    t.text = title;
-    t.textColor = UIColor.whiteColor;
-    t.font = [UIFont systemFontOfSize:13];
+    t.text = title; t.textColor = UIColor.whiteColor; t.font = [UIFont systemFontOfSize:13];
     t.adjustsFontSizeToFitWidth = YES;
 
     UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(135, y, 62, 44)];
@@ -431,44 +487,44 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
     l.textAlignment = NSTextAlignmentRight;
 
     UIStepper *s = [[UIStepper alloc] initWithFrame:CGRectMake(204, y + 7, 94, 30)];
-    s.minimumValue = mn;
-    s.maximumValue = mx;
-    s.stepValue = st;
-    s.value = v;
-    s.tag = tag;
+    s.minimumValue = mn; s.maximumValue = mx; s.stepValue = st; s.value = v; s.tag = tag;
     [s addTarget:self action:@selector(stepChanged:) forControlEvents:UIControlEventValueChanged];
 
-    [_scroll addSubview:t];
-    [_scroll addSubview:l];
-    [_scroll addSubview:s];
-    _steppers[@(tag)] = s;
-    _vals[@(tag)]     = l;
-    _titles[@(tag)]   = t;
+    [_scroll addSubview:t]; [_scroll addSubview:l]; [_scroll addSubview:s];
+    _steppers[@(tag)] = s; _vals[@(tag)] = l; _titles[@(tag)] = t;
     return s;
 }
 
 - (void)buildPanel {
     _panel = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 300, 420)];
-    _panel.backgroundColor = [UIColor colorWithWhite:0.05 alpha:0.88];
+    _panel.backgroundColor = [UIColor colorWithWhite:0.05 alpha:0.90];
     _panel.layer.cornerRadius = 14;
     _panel.clipsToBounds = YES;
 
     UILabel *h = [[UILabel alloc] initWithFrame:CGRectMake(12, 4, 276, 30)];
-    h.text = @"Cài đặt Auto Click";
+    h.text = @"Cài đặt Auto Click (3 ngón x3)";
     h.textColor = UIColor.whiteColor;
-    h.font = [UIFont boldSystemFontOfSize:15];
+    h.font = [UIFont boldSystemFontOfSize:14];
     [_panel addSubview:h];
 
     _scroll = [[UIScrollView alloc] initWithFrame:CGRectMake(0, 36, 300, 384)];
     [_panel addSubview:_scroll];
 
-    CGFloat y = 0;
+    CGFloat y = 6;
+    // 2 Tùy chọn chế độ Play/Stop đặt trên cùng của menu
+    _modeTapBtn  = [self makeModeButtonAtY:y tag:0 title:@"Chạm Play/Stop: Chạy liên tục / Dừng"]; y += 42;
+    _modeHoldBtn = [self makeModeButtonAtY:y tag:1 title:@"Giữ Play/Stop: Chạy / Thả tay ra dừng"]; y += 44;
+
+    UIView *sep = [[UIView alloc] initWithFrame:CGRectMake(12, y, 276, 1)];
+    sep.backgroundColor = [UIColor colorWithWhite:1 alpha:0.15];
+    [_scroll addSubview:sep];
+    y += 8;
+
     [self addRowAtY:y tag:100 title:@"Số điểm click" min:1 max:MAXP step:1 value:_count]; y += 44;
     [self addRowAtY:y tag:101 title:@"Thời gian nhấn (ms)" min:10 max:2000 step:10 value:_hold]; y += 44;
     [self addRowAtY:y tag:102 title:@"Số vòng (0 = ∞)" min:0 max:999 step:1 value:_loops]; y += 44;
     for (int i = 0; i < MAXP; i++) {
-        [self addRowAtY:y tag:i title:[NSString stringWithFormat:@"Điểm %d - chờ (ms)", i + 1]
-                    min:0 max:600000 step:50 value:_delay[i]];
+        [self addRowAtY:y tag:i title:[NSString stringWithFormat:@"Điểm %d - chờ (ms)", i + 1] min:0 max:600000 step:50 value:_delay[i]];
         y += 44;
     }
 
@@ -484,7 +540,7 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
 
 - (void)layoutPanel {
     CGRect b = self.view.bounds, f = _panel.frame;
-    f.size.height = MIN(420, MAX(180, b.size.height - 80));
+    f.size.height = MIN(420, MAX(180, b.size.height - 90));
     _scroll.frame = CGRectMake(0, 36, 300, f.size.height - 36);
     f.origin.x = MIN(MAX(_hub.frame.origin.x, 8), MAX(8, b.size.width - 300 - 8));
     CGFloat below = CGRectGetMaxY(_hub.frame) + 8;
@@ -511,9 +567,30 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
     [self.view setNeedsLayout];
 }
 
+- (void)refreshModeButtons {
+    UIColor *activeBg = [UIColor colorWithRed:0.1 green:0.65 blue:0.25 alpha:0.35];
+    UIColor *activeBd = [UIColor colorWithRed:0.2 green:0.85 blue:0.35 alpha:1.0];
+    UIColor *idleBg   = [UIColor colorWithWhite:1 alpha:0.08];
+    UIColor *idleBd   = [UIColor colorWithWhite:1 alpha:0.2];
+
+    BOOL isTap = (_runMode == 0);
+    [_modeTapBtn setTitle:(isTap ? @"● Chạm Play/Stop: Chạy / Nhấn lại dừng" : @"○ Chạm Play/Stop: Chạy / Nhấn lại dừng") forState:UIControlStateNormal];
+    _modeTapBtn.backgroundColor = isTap ? activeBg : idleBg;
+    _modeTapBtn.layer.borderColor = (isTap ? activeBd : idleBd).CGColor;
+    [_modeTapBtn setTitleColor:(isTap ? UIColor.whiteColor : [UIColor colorWithWhite:0.75 alpha:1]) forState:UIControlStateNormal];
+
+    [_modeHoldBtn setTitle:(!isTap ? @"● Giữ Play/Stop: Chạy / Thả tay ra dừng" : @"○ Giữ Play/Stop: Chạy / Thả tay ra dừng") forState:UIControlStateNormal];
+    _modeHoldBtn.backgroundColor = !isTap ? activeBg : idleBg;
+    _modeHoldBtn.layer.borderColor = (!isTap ? activeBd : idleBd).CGColor;
+    [_modeHoldBtn setTitleColor:(!isTap ? UIColor.whiteColor : [UIColor colorWithWhite:0.75 alpha:1]) forState:UIControlStateNormal];
+}
+
 - (void)refreshAll {
     [self refreshPlayButton];
+    [self refreshModeButtons];
     _panel.hidden = !_menuOpen;
+    // Ở chế độ Giữ để chạy, chỉ cho kéo Hub khi đang mở menu để lúc nhấn giữ không bị trượt tay hủy chạy
+    _hubPan.enabled = (_runMode == 0 || _menuOpen);
     for (int i = 0; i < MAXP; i++) {
         _markers[i].hidden = !(_menuOpen && i < _count);
     }
@@ -523,8 +600,7 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
         _vals[k].text = (t == 102 && v == 0) ? @"∞" : [NSString stringWithFormat:@"%d", v];
         if (t < MAXP) {
             CGFloat a = (t < _count) ? 1.0 : 0.35;
-            _vals[k].alpha = a;
-            _titles[k].alpha = a;
+            _vals[k].alpha = a; _titles[k].alpha = a;
             _steppers[k].enabled = (t < _count);
             _steppers[k].alpha = a;
         }
@@ -539,6 +615,7 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
 }
 
 - (void)start {
+    if (_running) return;
     _running = YES;
     _token++;
     [self refreshPlayButton];
@@ -546,6 +623,7 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
 }
 
 - (void)stop {
+    if (!_running) return;
     _running = NO;
     _token++;
     [self refreshPlayButton];
@@ -566,8 +644,7 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
     int waitMs = MAX(10, _delay[idx]);
     double holdSec = _hold / 1000.0;
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(waitMs / 1000.0 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(waitMs / 1000.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         if (tok != self->_token || !self->_running) return;
         CGPoint p = [self pointForIndex:idx];
         DoTap(p, holdSec);
@@ -580,8 +657,7 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
                 m.transform = CGAffineTransformIdentity;
             }];
         }
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(holdSec * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(holdSec * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [self stepToken:tok index:idx + 1 loops:loopsDone];
         });
     });
@@ -589,24 +665,83 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
 
 @end
 
+#pragma mark - 3-Finger Triple Tap Detector (Non-blocking UIApplication sendEvent hook)
+
+static void (*gOrigSendEvent)(id, SEL, UIEvent *) = NULL;
+static NSUInteger gMaxFingersInCluster = 0;
+static NSTimeInterval gClusterStartTime = 0;
+static BOOL gClusterHadCancel = NO;
+static NSUInteger gThreeFingerTapCount = 0;
+static NSTimeInterval gLastThreeFingerTapTime = 0;
+
+static void ACHookSendEvent(id self, SEL _cmd, UIEvent *event) {
+    if (!gIsInjectingTouch && event.type == UIEventTypeTouches) {
+        NSSet<UITouch *> *all = [event allTouches];
+        NSUInteger downCount = 0;
+        for (UITouch *t in all) {
+            if (t.phase == UITouchPhaseBegan || t.phase == UITouchPhaseMoved || t.phase == UITouchPhaseStationary) {
+                downCount++;
+            } else if (t.phase == UITouchPhaseCancelled) {
+                gClusterHadCancel = YES;
+            }
+        }
+        NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
+        if (downCount > 0) {
+            if (gClusterStartTime == 0) gClusterStartTime = now;
+            if (downCount > gMaxFingersInCluster) gMaxFingersInCluster = downCount;
+        } else if (gMaxFingersInCluster > 0) {
+            // Tất cả ngón tay vừa nhấc lên
+            if (!gClusterHadCancel && gMaxFingersInCluster == 3 && (now - gClusterStartTime) < 0.5) {
+                if ((now - gLastThreeFingerTapTime) < 0.65) {
+                    gThreeFingerTapCount++;
+                } else {
+                    gThreeFingerTapCount = 1;
+                }
+                gLastThreeFingerTapTime = now;
+                if (gThreeFingerTapCount >= 3) {
+                    gThreeFingerTapCount = 0;
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [gController toggleMenu];
+                    });
+                }
+            } else {
+                // Reset chuỗi đếm nếu có chạm khác 3 ngón xen giữa hoặc bị hệ thống hủy chạm
+                gThreeFingerTapCount = 0;
+            }
+            gMaxFingersInCluster = 0;
+            gClusterStartTime = 0;
+            gClusterHadCancel = NO;
+        }
+    }
+    if (gOrigSendEvent) gOrigSendEvent(self, _cmd, event);
+}
+
+static void ACInstallThreeFingerHook(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        Method m = class_getInstanceMethod(UIApplication.class, @selector(sendEvent:));
+        if (m) {
+            gOrigSendEvent = (void (*)(id, SEL, UIEvent *))method_getImplementation(m);
+            method_setImplementation(m, (IMP)ACHookSendEvent);
+        }
+    });
+}
+
 #pragma mark - Constructor & Lifecycle
 
 static void ACSetup(void) {
     if (gOverlay) return;
+    ACInstallThreeFingerHook();
     ACWindow *w = nil;
     if (@available(iOS 13.0, *)) {
         for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
-            if ([s isKindOfClass:UIWindowScene.class] &&
-                (s.activationState == UISceneActivationStateForegroundActive ||
-                 s.activationState == UISceneActivationStateForegroundInactive)) {
+            if ([s isKindOfClass:UIWindowScene.class] && (s.activationState == UISceneActivationStateForegroundActive || s.activationState == UISceneActivationStateForegroundInactive)) {
                 w = [[ACWindow alloc] initWithWindowScene:(UIWindowScene *)s];
                 break;
             }
         }
     }
-    if (!w) {
-        w = [[ACWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
-    }
+    if (!w) w = [[ACWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     w.windowLevel = UIWindowLevelAlert + 100;
     w.backgroundColor = UIColor.clearColor;
     w.rootViewController = [[ACController alloc] init];
@@ -616,20 +751,11 @@ static void ACSetup(void) {
 
 __attribute__((constructor)) static void ACInit(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification
-                                                        object:nil
-                                                         queue:NSOperationQueue.mainQueue
-                                                    usingBlock:^(NSNotification *n) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{
-                ACSetup();
-            });
+        [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ ACSetup(); });
         }];
         if (UIApplication.sharedApplication.applicationState == UIApplicationStateActive) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{
-                ACSetup();
-            });
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ ACSetup(); });
         }
     });
 }
