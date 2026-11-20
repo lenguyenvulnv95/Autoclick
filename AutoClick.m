@@ -1,10 +1,10 @@
 // AutoClick.m - iOS auto click dylib (tiêm bằng ESign / TrollFools)
-// Phiên bản v3 - Đã vá các lỗi runtime:
+// Phiên bản v4:
 // 1. Khóa màn hình ngang (Landscape)
-// 2. Chạm 3 ngón tay 3 lần bất kỳ trên màn hình để mở/đóng menu (lọc chạm hủy & chạm xen giữa)
-// 3. Thêm 2 chế độ Play/Stop trên đầu menu: Chạm bật/tắt & Giữ để chạy (thả ra dừng)
-// 4. Bảo toàn chạm thật khi inject touch (sửa lỗi văng/kẹt ở Chế độ 2)
-// 5. Chống kích hoạt nhầm khi kéo Hub lúc mở menu ở Chế độ 2
+// 2. Chạm 3 ngón tay 2 lần bất kỳ trên màn hình để mở/đóng menu
+// 3. Ẩn nút Play/Stop, menu cài đặt và các điểm marker khỏi quay/chụp màn hình
+// 4. 2 chế độ Play/Stop trên đầu menu: Chạm bật/tắt & Giữ để chạy (thả ra dừng)
+// 5. Bảo toàn chạm thật khi inject touch & chống kích hoạt nhầm khi kéo Hub
 // 6. Tự động lưu vị trí các điểm, vị trí Hub và chế độ chạy
 #import <UIKit/UIKit.h>
 #import <dlfcn.h>
@@ -203,22 +203,11 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
     });
 }
 
-#pragma mark - Overlay Window
-
-@interface ACWindow : UIWindow
-@end
-@implementation ACWindow
-- (UIView *)hitTest:(CGPoint)pt withEvent:(UIEvent *)e {
-    UIView *v = [super hitTest:pt withEvent:e];
-    if (v == self || v == self.rootViewController.view) return nil;
-    return v;
-}
-- (BOOL)_canBecomeKeyWindow { return NO; }
-@end
-
-#pragma mark - Controller & UI
+#pragma mark - Controller Interface
 
 @interface ACController : UIViewController {
+    UITextField *_secureField;
+    UIView *_secureContainer;
     UIView *_hub, *_panel;
     UIButton *_play;
     UIButton *_modeTapBtn, *_modeHoldBtn;
@@ -234,10 +223,34 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
     double _px[MAXP], _py[MAXP];
     CGPoint _hubPos;
 }
+@property (nonatomic, readonly) UIView *secureContainer;
 - (void)toggleMenu;
 @end
 
+#pragma mark - Overlay Window
+
+@interface ACWindow : UIWindow
+@end
+@implementation ACWindow
+- (UIView *)hitTest:(CGPoint)pt withEvent:(UIEvent *)e {
+    UIView *v = [super hitTest:pt withEvent:e];
+    UIView *rootView = self.rootViewController.view;
+    UIView *secView = [self.rootViewController isKindOfClass:ACController.class]
+        ? ((ACController *)self.rootViewController).secureContainer
+        : nil;
+    if (v == self || v == rootView || (secView && v == secView)) return nil;
+    return v;
+}
+- (BOOL)_canBecomeKeyWindow { return NO; }
+@end
+
+#pragma mark - Controller Implementation
+
 @implementation ACController
+
+- (UIView *)secureContainer {
+    return _secureContainer;
+}
 
 // Cố định màn hình ngang (Landscape)
 - (BOOL)shouldAutorotate { return YES; }
@@ -288,11 +301,45 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
     } forKey:@"AC_cfg"];
 }
 
+- (void)buildSecureContainer {
+    // Tạo lớp bảo mật của UITextField để ẩn toàn bộ UI Auto Click khỏi quay/chụp màn hình
+    _secureField = [[UITextField alloc] initWithFrame:self.view.bounds];
+    _secureField.secureTextEntry = YES;
+    _secureField.userInteractionEnabled = NO;
+    [_secureField layoutIfNeeded];
+
+    UIView *container = nil;
+    for (UIView *sub in _secureField.subviews) {
+        NSString *cls = NSStringFromClass(sub.class);
+        if ([cls containsString:@"TextLayoutCanvasView"] || [cls containsString:@"TextFieldCanvasView"] || [cls containsString:@"CanvasView"]) {
+            container = sub;
+            break;
+        }
+    }
+    if (!container) container = _secureField.subviews.firstObject;
+
+    if (container) {
+        for (UIView *child in [container.subviews copy]) {
+            [child removeFromSuperview];
+        }
+        container.frame = self.view.bounds;
+        container.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        container.backgroundColor = UIColor.clearColor;
+        container.userInteractionEnabled = YES;
+        container.clipsToBounds = NO;
+        [self.view addSubview:container];
+        _secureContainer = container;
+    } else {
+        _secureContainer = self.view;
+    }
+}
+
 - (void)viewDidLoad {
     [super viewDidLoad];
     gController = self;
     self.view.backgroundColor = UIColor.clearColor;
     [self loadDefaults];
+    [self buildSecureContainer];
     _markers  = [NSMutableArray array];
     _steppers = [NSMutableDictionary dictionary];
     _vals     = [NSMutableDictionary dictionary];
@@ -326,7 +373,7 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
     _hubPan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(panHub:)];
     _hubPan.cancelsTouchesInView = YES;
     [_hub addGestureRecognizer:_hubPan];
-    [self.view addSubview:_hub];
+    [_secureContainer addSubview:_hub];
 }
 
 - (void)toggleMenu {
@@ -379,9 +426,9 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
     if (g.state == UIGestureRecognizerStateBegan && _runMode == 1 && _running) {
         [self stop];
     }
-    CGPoint tr = [g translationInView:self.view];
-    [g setTranslation:CGPointZero inView:self.view];
-    CGRect b = self.view.bounds;
+    CGPoint tr = [g translationInView:_secureContainer];
+    [g setTranslation:CGPointZero inView:_secureContainer];
+    CGRect b = _secureContainer.bounds;
     CGPoint c = CGPointMake(_hub.center.x + tr.x, _hub.center.y + tr.y);
     c.x = MIN(MAX(c.x, 25), b.size.width - 25);
     c.y = MIN(MAX(c.y, 25), b.size.height - 25);
@@ -408,7 +455,7 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
         m.userInteractionEnabled = YES;
         m.tag = i;
         [m addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(panMarker:)]];
-        [self.view insertSubview:m atIndex:0];
+        [_secureContainer insertSubview:m atIndex:0];
         [_markers addObject:m];
     }
 }
@@ -421,9 +468,9 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
 - (void)panMarker:(UIPanGestureRecognizer *)g {
     UIView *m = g.view;
     int i = (int)m.tag;
-    CGPoint tr = [g translationInView:self.view];
-    [g setTranslation:CGPointZero inView:self.view];
-    CGSize b = self.view.bounds.size;
+    CGPoint tr = [g translationInView:_secureContainer];
+    [g setTranslation:CGPointZero inView:_secureContainer];
+    CGSize b = _secureContainer.bounds.size;
     if (b.width <= 0 || b.height <= 0) return;
     CGPoint c = CGPointMake(MIN(MAX(m.center.x + tr.x, 0), b.width), MIN(MAX(m.center.y + tr.y, 0), b.height));
     m.center = c;
@@ -436,6 +483,9 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
+    if (_secureContainer && _secureContainer != self.view) {
+        _secureContainer.frame = self.view.bounds;
+    }
     for (int i = 0; i < MAXP; i++) {
         _markers[i].center = [self pointForIndex:i];
     }
@@ -502,7 +552,7 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
     _panel.clipsToBounds = YES;
 
     UILabel *h = [[UILabel alloc] initWithFrame:CGRectMake(12, 4, 276, 30)];
-    h.text = @"Cài đặt Auto Click (3 ngón x3)";
+    h.text = @"Cài đặt Auto Click (3 ngón x2)";
     h.textColor = UIColor.whiteColor;
     h.font = [UIFont boldSystemFontOfSize:14];
     [_panel addSubview:h];
@@ -535,7 +585,7 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
     [_scroll addSubview:r];
 
     _scroll.contentSize = CGSizeMake(300, y + 56);
-    [self.view addSubview:_panel];
+    [_secureContainer addSubview:_panel];
 }
 
 - (void)layoutPanel {
@@ -665,7 +715,7 @@ static void DoTap(CGPoint screenPoint, NSTimeInterval hold) {
 
 @end
 
-#pragma mark - 3-Finger Triple Tap Detector (Non-blocking UIApplication sendEvent hook)
+#pragma mark - 3-Finger Double Tap Detector (Non-blocking UIApplication sendEvent hook)
 
 static void (*gOrigSendEvent)(id, SEL, UIEvent *) = NULL;
 static NSUInteger gMaxFingersInCluster = 0;
@@ -698,7 +748,7 @@ static void ACHookSendEvent(id self, SEL _cmd, UIEvent *event) {
                     gThreeFingerTapCount = 1;
                 }
                 gLastThreeFingerTapTime = now;
-                if (gThreeFingerTapCount >= 3) {
+                if (gThreeFingerTapCount >= 2) {
                     gThreeFingerTapCount = 0;
                     dispatch_async(dispatch_get_main_queue(), ^{
                         [gController toggleMenu];
