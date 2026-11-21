@@ -1,20 +1,36 @@
-name: Build dylib
-on: [workflow_dispatch, push]
+name: Build AutoClick Dylib
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
 jobs:
   build:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch Dear ImGui
+        run: |
+          git clone --depth 1 https://github.com/ocornut/imgui.git
+
       - name: Compile AutoClick.dylib
         run: |
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-          clang++ -arch arm64 -isysroot "$SDK" \
-            -miphoneos-version-min=13.0 -std=c++17 -fobjc-arc -dynamiclib \
-            -framework UIKit -framework Foundation -framework CoreGraphics \
-            -framework QuartzCore -framework Metal -framework MetalKit \
-            -framework Accelerate \
-            -install_name @rpath/AutoClick.dylib \
-            -o AutoClick.dylib AutoClick.mm
+          clang++ -arch arm64 -isysroot $SDK -miphoneos-version-min=12.0 \
+          -std=c++17 -fobjc-arc -dynamiclib \
+          -I. -Iimgui -Iimgui/backends \
+          -framework UIKit -framework Foundation -framework CoreGraphics \
+          -framework QuartzCore -framework Metal -framework MetalKit -framework Accelerate \
+          -install_name @rpath/AutoClick.dylib \
+          -lc++ \
+          -o AutoClick.dylib \
+          AutoClick.mm \
+          imgui/imgui.cpp imgui/imgui_draw.cpp imgui/imgui_tables.cpp imgui/imgui_widgets.cpp \
+          imgui/backends/imgui_impl_metal.mm
+
       - name: Upload AutoClick.dylib
         uses: actions/upload-artifact@v4
         with:
