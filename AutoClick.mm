@@ -1134,19 +1134,19 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 
             int comboVal = (int)g_Cfg.selectedCombo;
             if (ImGui::RadioButton("C1: Gank tu xa", &comboVal, 1)) {
-                g_Cfg.selectedCombo = NakrothComboType::GANK_LONG_RANGE;
+                g_Cfg.selectedCombo = NakComboType::GANK_LONG_RANGE;
                 [self updateQuickButtonHighlights];
             }
             ImGui::SameLine(); ImGui::TextDisabled("(S2 -> AA -> S1 -> S3 -> AA -> S1)");
 
             if (ImGui::RadioButton("C2: Dich o gan", &comboVal, 2)) {
-                g_Cfg.selectedCombo = NakrothComboType::CLOSE_COMBAT;
+                g_Cfg.selectedCombo = NakComboType::CLOSE_COMBAT;
                 [self updateQuickButtonHighlights];
             }
             ImGui::SameLine(); ImGui::TextDisabled("(S1 -> AA -> S3 -> S2 -> AA -> S1)");
 
             if (ImGui::RadioButton("C3: Cau ria / Rut lui", &comboVal, 3)) {
-                g_Cfg.selectedCombo = NakrothComboType::POKE_AND_RUN;
+                g_Cfg.selectedCombo = NakComboType::POKE_AND_RUN;
                 [self updateQuickButtonHighlights];
             }
             ImGui::SameLine(); ImGui::TextDisabled("(S2 -> S1 -> AA -> S1 lui)");
