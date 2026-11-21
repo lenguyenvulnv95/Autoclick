@@ -820,44 +820,102 @@ namespace VisionEngine {
         if ((now - g_LastFrameTime) < minInterval) return;
         if (g_IsProcessing.exchange(true)) return;
 
-        g_LastFrameTime = now;
+        // Every failure after acquiring the processing flag must release it.
+        auto releaseProcessing = [] {
+            g_IsProcessing.store(false);
+        };
+
         int w = (int)texture.width;
         int h = (int)texture.height;
-        NSUInteger bytesPerRow = (NSUInteger)(w * 4);
+        if (w <= 0 || h <= 0 || (NSUInteger)w > NSUIntegerMax / 4) {
+            NSLog(@"[PXVision] Invalid Metal texture dimensions: %d x %d", w, h);
+            releaseProcessing();
+            return;
+        }
+
+        NSUInteger bytesPerRow = (NSUInteger)w * 4;
+        if ((NSUInteger)h > NSUIntegerMax / bytesPerRow) {
+            NSLog(@"[PXVision] Readback size overflow: %d x %d", w, h);
+            releaseProcessing();
+            return;
+        }
         NSUInteger totalBytes = bytesPerRow * (NSUInteger)h;
         float scale = (float)[UIScreen mainScreen].scale;
 
         id<MTLDevice> device = texture.device;
+        if (!device) {
+            NSLog(@"[PXVision] Texture has no Metal device");
+            releaseProcessing();
+            return;
+        }
+
         if (!g_BlitQueue) {
             g_BlitQueue = [device newCommandQueue];
         }
-        if (!g_ReadbackBuffer || g_ReadbackBufferSize < totalBytes) {
-            g_ReadbackBuffer = [device newBufferWithLength:totalBytes options:MTLResourceStorageModeShared];
+        if (!g_BlitQueue) {
+            NSLog(@"[PXVision] Failed to create blit command queue");
+            releaseProcessing();
+            return;
+        }
+
+        if (!g_ReadbackBuffer || g_ReadbackBufferSize < totalBytes ||
+            g_ReadbackBuffer.device != device) {
+            id<MTLBuffer> newBuffer =
+                [device newBufferWithLength:totalBytes options:MTLResourceStorageModeShared];
+            if (!newBuffer) {
+                NSLog(@"[PXVision] Failed to allocate readback buffer (%lu bytes)",
+                      (unsigned long)totalBytes);
+                releaseProcessing();
+                return;
+            }
+            g_ReadbackBuffer = newBuffer;
             g_ReadbackBufferSize = totalBytes;
         }
 
+        // Keep this exact buffer alive until the GPU completion handler has
+        // finished consuming it; do not dereference a mutable global there.
+        id<MTLBuffer> readbackBuffer = g_ReadbackBuffer;
         id<MTLCommandBuffer> cmdBuf = [g_BlitQueue commandBuffer];
+        if (!cmdBuf) {
+            NSLog(@"[PXVision] Failed to create blit command buffer");
+            releaseProcessing();
+            return;
+        }
+
         id<MTLBlitCommandEncoder> blit = [cmdBuf blitCommandEncoder];
+        if (!blit) {
+            NSLog(@"[PXVision] Failed to create blit encoder");
+            releaseProcessing();
+            return;
+        }
+
         [blit copyFromTexture:texture
                   sourceSlice:0
                   sourceLevel:0
                  sourceOrigin:MTLOriginMake(0, 0, 0)
                    sourceSize:MTLSizeMake(w, h, 1)
-                     toBuffer:g_ReadbackBuffer
+                     toBuffer:readbackBuffer
             destinationOffset:0
        destinationBytesPerRow:bytesPerRow
      destinationBytesPerImage:totalBytes];
         [blit endEncoding];
 
+        g_LastFrameTime = now;
         [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> _Nonnull buffer) {
-            if (buffer.status == MTLCommandBufferStatusCompleted && g_ReadbackBuffer) {
-                const uint8_t* ptr = (const uint8_t*)[g_ReadbackBuffer contents];
-                dispatch_async(g_VisionQueue, ^{
-                    ProcessFrameBuffer(ptr, w, h, (int)bytesPerRow, scale);
-                });
+            if (buffer.status == MTLCommandBufferStatusCompleted) {
+                const uint8_t* ptr = (const uint8_t*)[readbackBuffer contents];
+                if (ptr) {
+                    dispatch_async(g_VisionQueue, ^{
+                        ProcessFrameBuffer(ptr, w, h, (int)bytesPerRow, scale);
+                    });
+                    return;
+                }
+                NSLog(@"[PXVision] Readback buffer contents unavailable");
             } else {
-                g_IsProcessing.store(false);
+                NSLog(@"[PXVision] GPU blit failed (status=%ld, error=%@)",
+                      (long)buffer.status, buffer.error);
             }
+            releaseProcessing();
         }];
         [cmdBuf commit];
     }
