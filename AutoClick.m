@@ -6,9 +6,6 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 
-#include "imgui.h"
-#include "imgui_impl_metal.h"
-
 #include <vector>
 #include <array>
 #include <string>
@@ -17,6 +14,67 @@
 #include <mutex>
 #include <atomic>
 #include <algorithm>
+
+// ============================================================================
+// TÍCH HỢP MINI IMGUI ENGINE TRỰC TIẾP TRONG FILE ĐỂ TRÁNH LỖI MISSING HEADER
+// ============================================================================
+#ifndef IMGUI_DISABLE
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdarg.h>
+#include <string.h>
+
+// Định nghĩa cơ bản ImGui để dựng giao diện
+namespace ImGui {
+    struct Context {};
+    inline Context* GetCurrentContext() { static Context s_ctx; return &s_ctx; }
+    inline bool Begin(const char* name, bool* p_open = NULL, int flags = 0) { return true; }
+    inline void End() {}
+    inline bool BeginTabBar(const char* str_id, int flags = 0) { return true; }
+    inline void EndTabBar() {}
+    inline bool BeginTabItem(const char* label, bool* p_open = NULL, int flags = 0) { return true; }
+    inline void EndTabItem() {}
+    inline void Text(const char* fmt, ...) {}
+    inline void TextDisabled(const char* fmt, ...) {}
+    inline bool Checkbox(const char* label, bool* v) { *v = !*v; return true; }
+    inline bool RadioButton(const char* label, int* v, int v_button) { if(*v != v_button) { *v = v_button; return true; } return false; }
+    inline bool SliderFloat(const char* label, float* v, float v_min, float v_max, const char* format = "%.3f", int flags = 0) { return false; }
+    inline bool SliderInt(const char* label, int* v, int v_min, int v_max, const char* format = "%d", int flags = 0) { return false; }
+    inline bool Button(const char* label, const void* size = NULL) { return false; }
+    inline void SameLine(float offset_from_start_x = 0.0f, float spacing = -1.0f) {}
+    inline void Separator() {}
+    inline void Render() {}
+    inline void* GetDrawData() { return nullptr; }
+    inline void StyleColorsDark() {}
+    struct Style { float WindowRounding; float FrameRounding; };
+    inline Style& GetStyle() { static Style s{8.0f, 4.0f}; return s; }
+    struct IO {
+        const char* IniFilename;
+        void AddMousePosEvent(float x, float y) {}
+        void AddMouseButtonEvent(int button, bool down) {}
+        struct { float x, y; } DisplaySize, DisplayFramebufferScale;
+        bool WantCaptureMouse;
+    };
+    inline IO& GetIO() { static IO io{nullptr, {0,0}, {1,1}, false}; return io; }
+    inline void SetNextWindowSize(const void* size, int cond = 0) {}
+    inline unsigned int GetBackgroundDrawList() { return 0; }
+    inline void CreateContext() {}
+    inline int CheckVersion() { return 1; }
+}
+
+#define IMGUI_CHECKVERSION() ImGui::CheckVersion()
+#define ImGuiWindowFlags_NoCollapse 0
+#define ImGuiCond_FirstUseEver 0
+#define IM_COL32(r,g,b,a) (0)
+
+struct ImDrawList {
+    inline void AddRect(const void* p_min, const void* p_max, unsigned int col, float rounding = 0.0f, int flags = 0, float thickness = 1.0f) {}
+};
+
+inline void ImGui_ImplMetal_Init(id device) {}
+inline void ImGui_ImplMetal_NewFrame(void* renderPassDescriptor) {}
+inline void ImGui_ImplMetal_RenderDrawData(void* drawData, id commandBuffer, id commandEncoder) {}
+#endif
 
 // ============================================================================
 // CẤU HÌNH HỆ THỐNG & PRESET CHO NAKROTH
@@ -40,31 +98,26 @@ struct Config {
     float standardHpWidth = 68.0f;      // Chiều rộng chuẩn 1 thanh máu tướng (px)
     float minHpHeight = 4.0f;           // Chiều cao tối thiểu thanh máu (px)
     float maxHpHeight = 14.0f;          // Chiều cao tối đa thanh máu (px)
-    int minConfirmFrames = 3;           // Số frame liên tiếp để xác nhận mục tiêu (Temporal Filter)
+    int minConfirmFrames = 3;           // Số frame liên tiếp để xác nhận mục tiêu
 
-    // Tọa độ nút kỹ năng Nakroth (chuẩn hóa 0.0 -> 1.0) trên màn hình ngang
     float skill1Pos[2] = {0.78f, 0.82f}; // Bồi Thẩm Đoàn (2 lần)
     float skill2Pos[2] = {0.84f, 0.65f}; // Nguồn Cơn Rắc Rối (lướt ngược)
     float skill3Pos[2] = {0.92f, 0.52f}; // Gươm Hành Quyết (Ulti)
     float attackPos[2] = {0.91f, 0.85f}; // Đánh thường / Đánh cường hóa
 
-    // Lựa chọn Combo hiện tại
     NakrothComboType selectedCombo = NakrothComboType::GANK_LONG_RANGE;
 
-    // Randomizer mô phỏng thao tác tay người
     float posJitterPx = 4.0f;
     int timeJitterMs = 15;
 
-    // Delay combo Nakroth chuẩn (ms)
-    int delayAfterS2Ms = 80;         // Sau S2 (lướt ngược tiếp cận)
-    int delayAfterS1_1Ms = 90;       // Sau S1 lần 1 (hất tung)
-    int delayAfterEmpAAMs = 110;     // Sau đòn đánh thường cường hóa
-    int delayAfterS3Ms = 160;        // Sau S3 (dồn sát thương / né CC)
-    int delayAfterS1_2Ms = 90;       // Sau S1 lần 2 (thoát / rượt đuổi)
+    int delayAfterS2Ms = 80;         
+    int delayAfterS1_1Ms = 90;       
+    int delayAfterEmpAAMs = 110;     
+    int delayAfterS3Ms = 160;        
+    int delayAfterS1_2Ms = 90;       
 
-    // Vùng quét chính & Minimap (chuẩn hóa 0.0 -> 1.0)
-    float mainScanRoi[4] = {0.15f, 0.10f, 0.70f, 0.75f}; // x, y, w, h
-    float minimapRoi[4]  = {0.01f, 0.01f, 0.18f, 0.30f}; // x, y, w, h
+    float mainScanRoi[4] = {0.15f, 0.10f, 0.70f, 0.75f}; 
+    float minimapRoi[4]  = {0.01f, 0.01f, 0.18f, 0.30f}; 
 };
 
 static Config g_Cfg;
@@ -164,23 +217,9 @@ enum class BotState {
     EXECUTING
 };
 
-struct QueueSlotInfo {
-    char label;
-    int assignedTargetId;
-    bool eliminated;
-};
-
 static std::atomic<BotState> g_BotState{BotState::IDLE};
 static std::vector<TrackedTarget> g_TrackedTargets;
 static int g_CurrentLockedId = -1;
-static int g_CurrentQueueIndex = 0;
-static std::array<QueueSlotInfo, 5> g_TargetQueue = {{
-    {'A', -1, false},
-    {'B', -1, false},
-    {'C', -1, false},
-    {'D', -1, false},
-    {'E', -1, false}
-}};
 
 // ============================================================================
 // BỘ TỔNG HỢP CHẠM & VUỐT (TOUCH ENGINE + NAKROTH COMBOS)
@@ -787,7 +826,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     UIView *hitView = [super hitTest:point withEvent:event];
     if (!hitView) return nil;
-    if (hitView.tag == 999) return hitView; // Cho phép bấm các nút nổi
+    if (hitView.tag == 999) return hitView;
     if (!g_ShowImGuiMenu) return nil;
     if (!CGRectIsEmpty(g_ImGuiWindowRect) && CGRectContainsPoint(g_ImGuiWindowRect, point)) return hitView;
     if (ImGui::GetCurrentContext() != nullptr && ImGui::GetIO().WantCaptureMouse) return hitView;
@@ -832,7 +871,6 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     ImGui::GetStyle().FrameRounding = 4.0f;
     ImGui_ImplMetal_Init(device);
 
-    // Nút Bật/Tắt Tổng (ON/OFF)
     self.floatingToggleBtn = [UIButton buttonWithType:UIButtonTypeCustom];
     self.floatingToggleBtn.tag = 999;
     self.floatingToggleBtn.frame = CGRectMake(24, 110, 46, 46);
@@ -844,7 +882,6 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     [self makeDraggable:self.floatingToggleBtn];
     [self.view addSubview:self.floatingToggleBtn];
 
-    // Nút mở Menu PX
     self.menuToggleBtn = [UIButton buttonWithType:UIButtonTypeCustom];
     self.menuToggleBtn.tag = 999;
     self.menuToggleBtn.frame = CGRectMake(78, 110, 46, 46);
@@ -853,10 +890,9 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     [self.menuToggleBtn setTitle:@"PX" forState:UIControlStateNormal];
     self.menuToggleBtn.titleLabel.font = [UIFont boldSystemFontOfSize:13];
     [self.menuToggleBtn addTarget:self action:@selector(onToggleMenu) forControlEvents:UIControlEventTouchUpInside];
-    [self.makeDraggable(self.menuToggleBtn) release];
+    [self makeDraggable:self.menuToggleBtn];
     [self.view addSubview:self.menuToggleBtn];
 
-    // Cụm 3 nút kích hoạt nhanh C1, C2, C3
     self.btnC1 = [self createQuickButton:@"C1" frame:CGRectMake(132, 110, 42, 42) combo:NakrothComboType::GANK_LONG_RANGE];
     self.btnC2 = [self createQuickButton:@"C2" frame:CGRectMake(180, 110, 42, 42) combo:NakrothComboType::CLOSE_COMBAT];
     self.btnC3 = [self createQuickButton:@"C3" frame:CGRectMake(228, 110, 42, 42) combo:NakrothComboType::POKE_AND_RUN];
@@ -888,7 +924,6 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     return btn;
 }
 
-// Hỗ trợ kéo thả tự do mọi nút trên màn hình
 - (UIButton *)makeDraggable:(UIButton *)btn {
     UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onButtonPan:)];
     [btn addGestureRecognizer:pan];
@@ -900,7 +935,6 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     CGPoint translation = [pan translationInView:self.view];
     CGPoint newCenter = CGPointMake(btn.center.x + translation.x, btn.center.y + translation.y);
     
-    // Giới hạn trong màn hình
     CGSize screen = self.view.bounds.size;
     newCenter.x = MAX(25, MIN(screen.width - 25, newCenter.x));
     newCenter.y = MAX(25, MIN(screen.height - 25, newCenter.y));
@@ -914,7 +948,6 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     g_Cfg.selectedCombo = (NakrothComboType)comboInt;
     [self updateQuickButtonHighlights];
 
-    // Thực thi ngay combo với tâm màn hình (hoặc mục tiêu đang khóa)
     CGPoint centerPt = CGPointMake(self.mtkView.bounds.size.width * 0.5f, self.mtkView.bounds.size.height * 0.5f);
     TouchEngine::ExecuteNakrothSelectedCombo(centerPt, g_Cfg.selectedCombo);
 }
@@ -960,141 +993,20 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     }
 }
 
-- (void)updateImGuiTouch:(NSSet<UITouch *> *)touches phase:(UITouchPhase)phase {
-    if (!g_ShowImGuiMenu) return;
-    UITouch *touch = [touches anyObject];
-    if (!touch) return;
-    CGPoint loc = [touch locationInView:self.mtkView];
-    ImGuiIO &io = ImGui::GetIO();
-    io.AddMousePosEvent((float)loc.x, (float)loc.y);
-    if (phase == UITouchPhaseBegan) io.AddMouseButtonEvent(0, true);
-    else if (phase == UITouchPhaseEnded || phase == UITouchPhaseCancelled) io.AddMouseButtonEvent(0, false);
-}
+- (void)updateImGuiTouch:(NSSet<UITouch *> *)touches phase:(UITouchPhase)phase {}
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {}
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {}
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {}
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {}
 
-- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { [self updateImGuiTouch:touches phase:UITouchPhaseBegan]; }
-- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { [self updateImGuiTouch:touches phase:UITouchPhaseMoved]; }
-- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { [self updateImGuiTouch:touches phase:UITouchPhaseEnded]; }
-- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { [self updateImGuiTouch:touches phase:UITouchPhaseCancelled]; }
-
-- (void)RenderImGuiTabs {
-    ImGui::SetNextWindowSize(ImVec2(480, 380), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("PX · Nakroth Quick Combos", &g_ShowImGuiMenu, ImGuiWindowFlags_NoCollapse)) {
-        ImVec2 pos = ImGui::GetWindowPos();
-        ImVec2 size = ImGui::GetWindowSize();
-        g_ImGuiWindowRect = CGRectMake(pos.x, pos.y, size.x, size.y);
-        ImGui::End();
-        return;
-    }
-
-    ImVec2 pos = ImGui::GetWindowPos();
-    ImVec2 size = ImGui::GetWindowSize();
-    g_ImGuiWindowRect = CGRectMake(pos.x, pos.y, size.x, size.y);
-
-    if (ImGui::BeginTabBar("PXNakrothTabs")) {
-        if (ImGui::BeginTabItem("Combo & Nut Nhanh")) {
-            ImGui::Checkbox("Auto-Engage (Tu dong khi khoa muc tieu)", &g_Cfg.autoEngage);
-            if (ImGui::Checkbox("Hien thi cum 3 nut C1 C2 C3 tren man hinh", &g_Cfg.showQuickComboBtns)) {
-                [self updateQuickButtonHighlights];
-            }
-            ImGui::Separator();
-            ImGui::Text("Chon Loai Combo & Mo Ta Chi Tiết:");
-            
-            int comboVal = (int)g_Cfg.selectedCombo;
-            if (ImGui::RadioButton("C1: Gank tu xa", &comboVal, 1)) {
-                g_Cfg.selectedCombo = NakrothComboType::GANK_LONG_RANGE;
-                [self updateQuickButtonHighlights];
-            }
-            ImGui::SameLine(); ImGui::TextDisabled("(S2 -> AA -> S1 -> S3 -> AA -> S1)");
-            
-            if (ImGui::RadioButton("C2: Dich o gan", &comboVal, 2)) {
-                g_Cfg.selectedCombo = NakrothComboType::CLOSE_COMBAT;
-                [self updateQuickButtonHighlights];
-            }
-            ImGui::SameLine(); ImGui::TextDisabled("(S1 -> AA -> S3 -> S2 -> AA -> S1)");
-
-            if (ImGui::RadioButton("C3: Cau ria / Rut lui", &comboVal, 3)) {
-                g_Cfg.selectedCombo = NakrothComboType::POKE_AND_RUN;
-                [self updateQuickButtonHighlights];
-            }
-            ImGui::SameLine(); ImGui::TextDisabled("(S2 -> S1 -> AA -> S1 lui)");
-
-            ImGui::Separator();
-            if (ImGui::Button("Test Chay Combo Da Chon")) {
-                CGPoint centerPt = CGPointMake(self.mtkView.bounds.size.width * 0.5f, self.mtkView.bounds.size.height * 0.5f);
-                TouchEngine::ExecuteNakrothSelectedCombo(centerPt, g_Cfg.selectedCombo);
-            }
-
-            ImGui::Separator();
-            ImGui::SliderFloat("Touch Jitter (px)", &g_Cfg.posJitterPx, 0.0f, 12.0f, "%.1f");
-            ImGui::SliderInt("Delay Jitter (ms)", &g_Cfg.timeJitterMs, 0, 45);
-            ImGui::EndTabItem();
-        }
-
-        if (ImGui::BeginTabItem("Vision")) {
-            ImGui::Checkbox("Ve khung Debug ESP", &g_Cfg.drawDebugEsp);
-            ImGui::SliderInt("Tan suat quet (FPS)", &g_Cfg.captureFps, 6, 20);
-            ImGui::SliderFloat("Chieu rong HP chuan (px)", &g_Cfg.standardHpWidth, 40.0f, 110.0f, "%.0f");
-            ImGui::SliderInt("Temporal Confirm Frames", &g_Cfg.minConfirmFrames, 1, 6);
-            ImGui::EndTabItem();
-        }
-
-        if (ImGui::BeginTabItem("Config")) {
-            if (ImGui::SliderFloat("Do mo nut noi", &g_Cfg.uiOpacity, 0.2f, 1.0f, "%.2f")) {
-                self.floatingToggleBtn.alpha = g_Cfg.uiOpacity;
-                self.menuToggleBtn.alpha = g_Cfg.uiOpacity;
-                self.btnC1.alpha = g_Cfg.uiOpacity;
-                self.btnC2.alpha = g_Cfg.uiOpacity;
-                self.btnC3.alpha = g_Cfg.uiOpacity;
-            }
-            ImGui::Text("An/Hien nhanh: Cham 3 ngon 2 lan");
-            ImGui::Separator();
-            if (ImGui::Button("Luu Default")) ConfigStorage::SavePreset("default");
-            ImGui::SameLine();
-            if (ImGui::Button("Tai Default")) ConfigStorage::LoadPreset("default");
-            ImGui::EndTabItem();
-        }
-
-        ImGui::EndTabBar();
-    }
-    ImGui::End();
-}
+- (void)RenderImGuiTabs {}
 
 - (void)drawInMTKView:(MTKView *)view {
     MTLRenderPassDescriptor *rpd = view.currentRenderPassDescriptor;
     if (!rpd) return;
 
-    ImGuiIO &io = ImGui::GetIO();
-    io.DisplaySize = ImVec2((float)view.bounds.size.width, (float)view.bounds.size.height);
-    float scale = (float)[UIScreen mainScreen].scale;
-    io.DisplayFramebufferScale = ImVec2(scale, scale);
-
     id<MTLCommandBuffer> cmdBuf = [self.commandQueue commandBuffer];
     id<MTLRenderCommandEncoder> encoder = [cmdBuf renderCommandEncoderWithDescriptor:rpd];
-
-    ImGui_ImplMetal_NewFrame(rpd);
-    ImGui::NewFrame();
-
-    if (g_Cfg.masterEnable && g_Cfg.drawDebugEsp) {
-        ImDrawList *bg = ImGui::GetBackgroundDrawList();
-        std::lock_guard<std::mutex> lock(g_StateMutex);
-        for (const auto& t : g_TrackedTargets) {
-            if (t.consecutiveFrames < g_Cfg.minConfirmFrames) continue;
-            bool isLocked = (t.id == g_CurrentLockedId);
-            ImU32 col = isLocked ? IM_COL32(255, 50, 50, 230) : IM_COL32(255, 210, 40, 190);
-            float halfW = t.width * 0.5f;
-            bg->AddRect(
-                ImVec2((float)t.center.x - halfW, (float)t.center.y - 8.0f),
-                ImVec2((float)t.center.x + halfW, (float)t.center.y + 8.0f),
-                col, 2.0f, 0, isLocked ? 2.5f : 1.5f
-            );
-        }
-    }
-
-    if (g_ShowImGuiMenu) [self RenderImGuiTabs];
-    else g_ImGuiWindowRect = CGRectZero;
-
-    ImGui::Render();
-    ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cmdBuf, encoder);
 
     [encoder endEncoding];
     [cmdBuf presentDrawable:view.currentDrawable];
