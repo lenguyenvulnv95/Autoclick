@@ -849,7 +849,7 @@ namespace VisionEngine {
             return;
         }
 
-        if (!g_BlitQueue) {
+        if (!g_BlitQueue || g_BlitQueue.device != device) {
             g_BlitQueue = [device newCommandQueue];
         }
         if (!g_BlitQueue) {
