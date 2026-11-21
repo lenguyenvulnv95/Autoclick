@@ -3,4 +3,4 @@ all:
 	-framework UIKit -framework Foundation -framework CoreGraphics -framework QuartzCore \
 	-install_name @rpath/AutoClick.dylib \
 	-lc++ \
-	-o AutoClick.dylib AutoClick.m
+	-o AutoClick.dylib AutoClick.mm
