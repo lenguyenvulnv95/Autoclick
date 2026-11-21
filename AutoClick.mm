@@ -705,7 +705,11 @@ namespace VisionEngine {
                     float blobW = (float)(maxX - minX + 1);
                     float blobH = (float)(maxY - minY + 1);
 
-                    if (blobW < scaledStdWidth * 0.65f || blobH < scaledMinH || blobH > scaledMaxH * 2.5f) {
+                    if (!HealthBarDetector::IsPlausibleBarShape(
+                            blobW, blobH,
+                            scaledStdWidth * 0.65f,
+                            scaledMinH,
+                            scaledMaxH * 2.5f)) {
                         continue;
                     }
 
