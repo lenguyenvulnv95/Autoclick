@@ -6,6 +6,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 
+#include <unistd.h>
 #include <vector>
 #include <array>
 #include <string>
@@ -62,6 +63,9 @@ namespace ImGui {
     inline int CheckVersion() { return 1; }
 }
 
+// Alias để code bên dưới dùng được tên "ImGuiIO" như ImGui thật
+typedef ImGui::IO ImGuiIO;
+
 #define IMGUI_CHECKVERSION() ImGui::CheckVersion()
 #define ImGuiWindowFlags_NoCollapse 0
 #define ImGuiCond_FirstUseEver 0
@@ -110,14 +114,14 @@ struct Config {
     float posJitterPx = 4.0f;
     int timeJitterMs = 15;
 
-    int delayAfterS2Ms = 80;         
-    int delayAfterS1_1Ms = 90;       
-    int delayAfterEmpAAMs = 110;     
-    int delayAfterS3Ms = 160;        
-    int delayAfterS1_2Ms = 90;       
+    int delayAfterS2Ms = 80;
+    int delayAfterS1_1Ms = 90;
+    int delayAfterEmpAAMs = 110;
+    int delayAfterS3Ms = 160;
+    int delayAfterS1_2Ms = 90;
 
-    float mainScanRoi[4] = {0.15f, 0.10f, 0.70f, 0.75f}; 
-    float minimapRoi[4]  = {0.01f, 0.01f, 0.18f, 0.30f}; 
+    float mainScanRoi[4] = {0.15f, 0.10f, 0.70f, 0.75f};
+    float minimapRoi[4]  = {0.01f, 0.01f, 0.18f, 0.30f};
 };
 
 static Config g_Cfg;
@@ -934,11 +938,11 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     UIView *btn = pan.view;
     CGPoint translation = [pan translationInView:self.view];
     CGPoint newCenter = CGPointMake(btn.center.x + translation.x, btn.center.y + translation.y);
-    
+
     CGSize screen = self.view.bounds.size;
     newCenter.x = MAX(25, MIN(screen.width - 25, newCenter.x));
     newCenter.y = MAX(25, MIN(screen.height - 25, newCenter.y));
-    
+
     btn.center = newCenter;
     [pan setTranslation:CGPointZero inView:self.view];
 }
@@ -959,7 +963,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     self.btnC1.backgroundColor = (g_Cfg.selectedCombo == NakrothComboType::GANK_LONG_RANGE) ? activeCol : normalCol;
     self.btnC2.backgroundColor = (g_Cfg.selectedCombo == NakrothComboType::CLOSE_COMBAT) ? activeCol : normalCol;
     self.btnC3.backgroundColor = (g_Cfg.selectedCombo == NakrothComboType::POKE_AND_RUN) ? activeCol : normalCol;
-    
+
     self.btnC1.hidden = !g_Cfg.showQuickComboBtns;
     self.btnC2.hidden = !g_Cfg.showQuickComboBtns;
     self.btnC3.hidden = !g_Cfg.showQuickComboBtns;
