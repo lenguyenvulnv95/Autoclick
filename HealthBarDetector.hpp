@@ -47,14 +47,14 @@ inline HSV ToHSV(uint8_t b8, uint8_t g8, uint8_t r8) {
 // accepted as an enemy hero.
 inline PixelClass ClassifyPixel(uint8_t b, uint8_t g, uint8_t r) {
     const HSV hsv = ToHSV(b, g, r);
-    if (hsv.s < 0.28f || hsv.v < 0.16f) return PixelClass::Other;
+    if (hsv.v < 0.16f) return PixelClass::Other;
 
-    const bool redHue = (hsv.h <= 25.0f || hsv.h >= 335.0f);
+    const bool redHue = (hsv.s >= 0.28f && (hsv.h <= 25.0f || hsv.h >= 335.0f));
     if (redHue && r >= g * 1.12f && r >= b * 1.18f) {
         return PixelClass::HeroHpRed;
     }
 
-    const bool yellowHue = (hsv.h >= 35.0f && hsv.h <= 72.0f);
+    const bool yellowHue = (hsv.s >= 0.28f && hsv.h >= 35.0f && hsv.h <= 72.0f);
     if (yellowHue && r >= b * 1.35f && g >= b * 1.25f) {
         return PixelClass::TowerHpYellow;
     }
