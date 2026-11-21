@@ -21,7 +21,7 @@
 #include "imgui_impl_metal.h"
 
 // ============================================================================
-// IOKIT / IOHIDEVENT PRIVATE DECLARATIONS (CHO TOUCH INJECTION IOS 16 - 26)
+// IOKIT / IOHIDEVENT PRIVATE DECLARATIONS (TOUCH INJECTION IOS 16 - 26)
 // ============================================================================
 typedef struct __IOHIDEvent *IOHIDEventRef;
 extern "C" {
@@ -227,7 +227,6 @@ namespace TouchEngine {
         return std::max(5, baseMs + dist(rng));
     }
 
-    // Tìm chính xác UIView chứa layer Metal/Unity của game
     UIView* FindMetalViewInHierarchy(UIView *root) {
         if ([root.layer isKindOfClass:[CAMetalLayer class]] &&
             ![root.layer.name isEqualToString:@"PXOverlayLayer"]) {
@@ -263,7 +262,6 @@ namespace TouchEngine {
         return fallbackWin;
     }
 
-    // Tạo IOHIDEvent chuẩn phần cứng để Unity/UIKit trên iOS 16-26 chấp nhận UITouch
     IOHIDEventRef CreateTouchHIDEvent(UITouchPhase phase, CGPoint point, NSInteger fingerId) {
         uint64_t machTime = mach_absolute_time();
         CGSize screen = [UIScreen mainScreen].bounds.size;
@@ -498,7 +496,6 @@ namespace TouchEngine {
         DispatchTouchEvent(UITouchPhaseEnded, endPt, 2);
     }
 
-    // Cho phép kích hoạt thủ công kể cả khi đang IDLE hoặc SCANNING
     void ExecuteNakSelectedCombo(CGPoint targetPt, NakComboType comboType, bool isManualTrigger = false) {
         BotState prevState = g_BotState.load();
         if (prevState == BotState::EXECUTING) return;
@@ -569,7 +566,7 @@ namespace TouchEngine {
 }
 
 // ============================================================================
-// XỬ LÝ THỊ GIÁC MÁY TÍNH (BLIT ENCODER BẤT ĐỒNG BỘ - KHÔNG LÀM TỤT FPS)
+// XỬ LÝ THỊ GIÁC MÁY TÍNH (BLIT ENCODER BẤT ĐỒNG BỘ - GIỮ 60 FPS)
 // ============================================================================
 namespace VisionEngine {
     static dispatch_queue_t g_VisionQueue = dispatch_queue_create("com.px.vision.queue", DISPATCH_QUEUE_SERIAL);
@@ -814,7 +811,6 @@ namespace VisionEngine {
         g_IsProcessing.store(false);
     }
 
-    // Dùng BlitCommandEncoder sao chép bất đồng bộ trên GPU -> Không chặn CPU, giữ nguyên 60 FPS
     void SubmitMetalTextureAsync(id<MTLTexture> texture) {
         if (!g_Cfg.masterEnable || !texture) return;
         if (texture.pixelFormat != MTLPixelFormatBGRA8Unorm) return;
@@ -868,7 +864,7 @@ namespace VisionEngine {
 }
 
 // ============================================================================
-// SWIZZLE CAMETALLAYER (CHỈ BẬT READABLE KHI MASTER ENABLE = ON)
+// SWIZZLE CAMETALLAYER
 // ============================================================================
 static id<CAMetalDrawable> (*orig_nextDrawable)(id self, SEL _cmd);
 static void (*orig_setFramebufferOnly)(id self, SEL _cmd, BOOL flag);
@@ -897,7 +893,7 @@ static id<CAMetalDrawable> hooked_nextDrawable(id self, SEL _cmd) {
 }
 
 // ============================================================================
-// OVERLAY WINDOW & IMGUI RENDERER (TẠM DỪNG MTKVIEW KHI KHÔNG VẼ ĐỂ TIẾT KIỆM GPU)
+// OVERLAY WINDOW & IMGUI RENDERER (ĐÃ SỬA ĐÓNG/MỞ MENU BẰNG NÚT PX & DẤU X)
 // ============================================================================
 @interface PXNoFocusTextField : UITextField
 @end
@@ -913,7 +909,12 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     UIView *hitView = [super hitTest:point withEvent:event];
     if (!hitView) return nil;
-    if (hitView.tag == 999) return hitView;
+
+    // Luôn ưu tiên bắt chạm cho các nút nổi (OFF/ON, PX, C1, C2, C3) trước ImGui
+    if (hitView.tag == 999 || (hitView.superview && hitView.superview.tag == 999)) {
+        return hitView;
+    }
+
     if (!g_ShowImGuiMenu) return nil;
     if (!CGRectIsEmpty(g_ImGuiWindowRect) && CGRectContainsPoint(g_ImGuiWindowRect, point)) return hitView;
     if (ImGui::GetCurrentContext() != nullptr && ImGui::GetIO().WantCaptureMouse) return hitView;
@@ -1013,6 +1014,8 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 
 - (UIButton *)makeDraggable:(UIButton *)btn {
     UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onButtonPan:)];
+    pan.cancelsTouchesInView = NO;
+    pan.delaysTouchesBegan = NO;
     [btn addGestureRecognizer:pan];
     return btn;
 }
@@ -1030,7 +1033,6 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     [pan setTranslation:CGPointZero inView:self.view];
 }
 
-// Bấm C1, C2, C3 kích hoạt ngay lập tức (nhắm mục tiêu đang khóa nếu có, hoặc tâm màn hình)
 - (void)onQuickComboTapped:(UIButton *)sender {
     int comboInt = [objc_getAssociatedObject(sender, "comboType") intValue];
     g_Cfg.selectedCombo = (NakComboType)comboInt;
@@ -1074,7 +1076,16 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 
 - (void)onToggleMenu {
     g_ShowImGuiMenu = !g_ShowImGuiMenu;
-    if (!g_ShowImGuiMenu) g_ImGuiWindowRect = CGRectZero;
+    if (!g_ShowImGuiMenu) {
+        g_ImGuiWindowRect = CGRectZero;
+        ImGuiIO &io = ImGui::GetIO();
+        io.AddMouseButtonEvent(0, false);
+    }
+    [self.view bringSubviewToFront:self.floatingToggleBtn];
+    [self.view bringSubviewToFront:self.menuToggleBtn];
+    [self.view bringSubviewToFront:self.btnC1];
+    [self.view bringSubviewToFront:self.btnC2];
+    [self.view bringSubviewToFront:self.btnC3];
 }
 
 - (void)onStealthGesture {
@@ -1112,9 +1123,19 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 - (void)RenderImGuiTabs {
     ImGui::SetNextWindowSize(ImVec2(480, 380), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("PX · Nak Quick Combos", &g_ShowImGuiMenu, ImGuiWindowFlags_NoCollapse)) {
-        ImVec2 pos = ImGui::GetWindowPos();
-        ImVec2 size = ImGui::GetWindowSize();
-        g_ImGuiWindowRect = CGRectMake(pos.x, pos.y, size.x, size.y);
+        if (!g_ShowImGuiMenu) {
+            g_ImGuiWindowRect = CGRectZero;
+        } else {
+            ImVec2 pos = ImGui::GetWindowPos();
+            ImVec2 size = ImGui::GetWindowSize();
+            g_ImGuiWindowRect = CGRectMake(pos.x, pos.y, size.x, size.y);
+        }
+        ImGui::End();
+        return;
+    }
+
+    if (!g_ShowImGuiMenu) {
+        g_ImGuiWindowRect = CGRectZero;
         ImGui::End();
         return;
     }
@@ -1207,14 +1228,19 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
         hasEspToDraw = !g_TrackedTargets.empty();
     }
 
-    // Nếu không mở menu và không có khung ESP nào cần vẽ thì bỏ qua render pass để không tốn GPU
-    if (!g_ShowImGuiMenu && !hasEspToDraw) {
-        g_ImGuiWindowRect = CGRectZero;
-        return;
-    }
-
     MTLRenderPassDescriptor *rpd = view.currentRenderPassDescriptor;
     if (!rpd) return;
+
+    // Khi menu vừa đóng và không có ESP, clear frame sạch sẽ 1 lần để xóa bóng menu cũ
+    if (!g_ShowImGuiMenu && !hasEspToDraw) {
+        g_ImGuiWindowRect = CGRectZero;
+        id<MTLCommandBuffer> cmdBuf = [self.commandQueue commandBuffer];
+        id<MTLRenderCommandEncoder> encoder = [cmdBuf renderCommandEncoderWithDescriptor:rpd];
+        [encoder endEncoding];
+        [cmdBuf presentDrawable:view.currentDrawable];
+        [cmdBuf commit];
+        return;
+    }
 
     ImGuiIO &io = ImGui::GetIO();
     io.DisplaySize = ImVec2((float)view.bounds.size.width, (float)view.bounds.size.height);
