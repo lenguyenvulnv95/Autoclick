@@ -5,6 +5,7 @@
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <mach/mach_time.h>
 
 #include <unistd.h>
 #include <vector>
@@ -20,9 +21,54 @@
 #include "imgui_impl_metal.h"
 
 // ============================================================================
-// CẤU HÌNH HỆ THỐNG & PRESET CHO NAKROTH
+// IOKIT / IOHIDEVENT PRIVATE DECLARATIONS (CHO TOUCH INJECTION IOS 16 - 26)
 // ============================================================================
-enum class NakrothComboType {
+typedef struct __IOHIDEvent *IOHIDEventRef;
+extern "C" {
+    IOHIDEventRef IOHIDEventCreateDigitizerEvent(CFAllocatorRef allocator,
+                                                 uint64_t timeStamp,
+                                                 uint32_t transducerType,
+                                                 uint32_t index,
+                                                 uint32_t identity,
+                                                 uint32_t eventMask,
+                                                 uint32_t buttonMask,
+                                                 float x,
+                                                 float y,
+                                                 float z,
+                                                 float tipPressure,
+                                                 float barrelPressure,
+                                                 Boolean range,
+                                                 Boolean touch,
+                                                 uint32_t options);
+
+    IOHIDEventRef IOHIDEventCreateDigitizerFingerEvent(CFAllocatorRef allocator,
+                                                       uint64_t timeStamp,
+                                                       uint32_t index,
+                                                       uint32_t identity,
+                                                       uint32_t eventMask,
+                                                       float x,
+                                                       float y,
+                                                       float z,
+                                                       float tipPressure,
+                                                       float twist,
+                                                       Boolean range,
+                                                       Boolean touch,
+                                                       uint32_t options);
+
+    void IOHIDEventAppendEvent(IOHIDEventRef parent, IOHIDEventRef child, uint32_t options);
+    void IOHIDEventSetIntegerValue(IOHIDEventRef event, uint32_t field, int value);
+}
+
+#define kIOHIDDigitizerTransducerTypeHand 3
+#define kIOHIDDigitizerEventRange         (1 << 0)
+#define kIOHIDDigitizerEventTouch         (1 << 1)
+#define kIOHIDDigitizerEventPosition      (1 << 2)
+#define kIOHIDEventFieldDigitizerIsDisplayIntegrated 720921
+
+// ============================================================================
+// CẤU HÌNH HỆ THỐNG & PRESET CHO NAK
+// ============================================================================
+enum class NakComboType {
     GANK_LONG_RANGE = 1,    // C1: Gank / bắt lẻ từ xa
     CLOSE_COMBAT    = 2,    // C2: Địch ở gần
     POKE_AND_RUN    = 3     // C3: Cấu rỉa / ra vào nhanh (rút lui ngược hướng S1 lần 2)
@@ -37,21 +83,21 @@ struct Config {
     bool showQuickComboBtns = true;     // Hiển thị cụm 3 nút C1, C2, C3 trên màn hình
     float uiOpacity = 0.85f;            // Độ mờ nút điều khiển nổi
 
-    int captureFps = 14;                // Tần suất quét CV (12 - 16 FPS)
+    int captureFps = 12;                // Tần suất quét CV (10 - 15 FPS)
     float standardHpWidth = 68.0f;      // Chiều rộng chuẩn 1 thanh máu tướng (px)
     float minHpHeight = 4.0f;           // Chiều cao tối thiểu thanh máu (px)
     float maxHpHeight = 14.0f;          // Chiều cao tối đa thanh máu (px)
-    int minConfirmFrames = 3;           // Số frame liên tiếp để xác nhận mục tiêu
+    int minConfirmFrames = 2;           // Số frame liên tiếp để xác nhận mục tiêu
 
-    float skill1Pos[2] = {0.78f, 0.82f}; // Bồi Thẩm Đoàn (2 lần)
-    float skill2Pos[2] = {0.84f, 0.65f}; // Nguồn Cơn Rắc Rối (lướt ngược)
-    float skill3Pos[2] = {0.92f, 0.52f}; // Gươm Hành Quyết (Ulti)
+    float skill1Pos[2] = {0.78f, 0.82f}; // Chiêu 1 (2 lần)
+    float skill2Pos[2] = {0.84f, 0.65f}; // Chiêu 2 (lướt ngược)
+    float skill3Pos[2] = {0.92f, 0.52f}; // Chiêu 3 (Ulti)
     float attackPos[2] = {0.91f, 0.85f}; // Đánh thường / Đánh cường hóa
 
-    NakrothComboType selectedCombo = NakrothComboType::GANK_LONG_RANGE;
+    NakComboType selectedCombo = NakComboType::GANK_LONG_RANGE;
 
-    float posJitterPx = 4.0f;
-    int timeJitterMs = 15;
+    float posJitterPx = 3.5f;
+    int timeJitterMs = 12;
 
     int delayAfterS2Ms = 80;
     int delayAfterS1_1Ms = 90;
@@ -74,7 +120,7 @@ namespace ConfigStorage {
     NSString* GetConfigFilePath(NSString *presetName) {
         NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
         NSString *docsDir = paths.firstObject;
-        return [docsDir stringByAppendingPathComponent:[NSString stringWithFormat:@"nakroth_%@.json", presetName]];
+        return [docsDir stringByAppendingPathComponent:[NSString stringWithFormat:@"nak_%@.json", presetName]];
     }
 
     void SavePreset(const char* name) {
@@ -118,7 +164,7 @@ namespace ConfigStorage {
         if (dict[@"showQuickComboBtns"]) g_Cfg.showQuickComboBtns = [dict[@"showQuickComboBtns"] boolValue];
         if (dict[@"uiOpacity"]) g_Cfg.uiOpacity = [dict[@"uiOpacity"] floatValue];
         if (dict[@"captureFps"]) g_Cfg.captureFps = [dict[@"captureFps"] intValue];
-        if (dict[@"selectedCombo"]) g_Cfg.selectedCombo = (NakrothComboType)[dict[@"selectedCombo"] intValue];
+        if (dict[@"selectedCombo"]) g_Cfg.selectedCombo = (NakComboType)[dict[@"selectedCombo"] intValue];
         if (dict[@"standardHpWidth"]) g_Cfg.standardHpWidth = [dict[@"standardHpWidth"] floatValue];
         if (dict[@"minConfirmFrames"]) g_Cfg.minConfirmFrames = [dict[@"minConfirmFrames"] intValue];
         if (dict[@"posJitterPx"]) g_Cfg.posJitterPx = [dict[@"posJitterPx"] floatValue];
@@ -165,14 +211,8 @@ static std::vector<TrackedTarget> g_TrackedTargets;
 static int g_CurrentLockedId = -1;
 
 // ============================================================================
-// BỘ TỔNG HỢP CHẠM & VUỐT (TOUCH ENGINE + NAKROTH COMBOS)
+// BỘ TỔNG HỢP CHẠM & VUỐT (IOHIDEVENT + UNITY VIEW TARGETING + NAK COMBOS)
 // ============================================================================
-@interface PXFakeTouch : NSObject
-@property (nonatomic, strong) UITouch *touch;
-@end
-@implementation PXFakeTouch
-@end
-
 namespace TouchEngine {
     static std::mt19937 rng(std::random_device{}());
     static NSMutableDictionary<NSNumber *, UITouch *> *g_ActiveTouches = nil;
@@ -187,36 +227,86 @@ namespace TouchEngine {
         return std::max(5, baseMs + dist(rng));
     }
 
-    UIWindow* FindGameWindow() {
-        UIWindow *gameWin = nil;
+    // Tìm chính xác UIView chứa layer Metal/Unity của game
+    UIView* FindMetalViewInHierarchy(UIView *root) {
+        if ([root.layer isKindOfClass:[CAMetalLayer class]] &&
+            ![root.layer.name isEqualToString:@"PXOverlayLayer"]) {
+            return root;
+        }
+        for (UIView *sub in root.subviews) {
+            UIView *found = FindMetalViewInHierarchy(sub);
+            if (found) return found;
+        }
+        return nil;
+    }
+
+    UIWindow* FindGameWindow(UIView **outGameView) {
+        UIWindow *fallbackWin = nil;
         if (@available(iOS 13.0, *)) {
             for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
                 if (![scene isKindOfClass:[UIWindowScene class]]) continue;
                 UIWindowScene *ws = (UIWindowScene *)scene;
                 for (UIWindow *w in ws.windows) {
-                    if (![NSStringFromClass([w class]) isEqualToString:@"PXPassthroughWindow"] && !w.hidden) {
-                        gameWin = w;
-                        if (w.isKeyWindow) return w;
+                    if ([NSStringFromClass([w class]) isEqualToString:@"PXPassthroughWindow"] || w.hidden) continue;
+                    UIView *metalView = FindMetalViewInHierarchy(w);
+                    if (metalView) {
+                        if (outGameView) *outGameView = metalView;
+                        return w;
                     }
-                }
-            }
-        } else {
-            for (UIWindow *w in [UIApplication sharedApplication].windows) {
-                if (![NSStringFromClass([w class]) isEqualToString:@"PXPassthroughWindow"] && !w.hidden) {
-                    gameWin = w;
-                    if (w.isKeyWindow) return w;
+                    if (!fallbackWin || w.isKeyWindow) fallbackWin = w;
                 }
             }
         }
-        return gameWin;
+        if (outGameView && fallbackWin) {
+            *outGameView = fallbackWin.rootViewController.view ?: fallbackWin;
+        }
+        return fallbackWin;
+    }
+
+    // Tạo IOHIDEvent chuẩn phần cứng để Unity/UIKit trên iOS 16-26 chấp nhận UITouch
+    IOHIDEventRef CreateTouchHIDEvent(UITouchPhase phase, CGPoint point, NSInteger fingerId) {
+        uint64_t machTime = mach_absolute_time();
+        CGSize screen = [UIScreen mainScreen].bounds.size;
+        float normX = (float)(point.x / std::max(1.0, screen.width));
+        float normY = (float)(point.y / std::max(1.0, screen.height));
+
+        Boolean isTouching = (phase == UITouchPhaseBegan || phase == UITouchPhaseMoved || phase == UITouchPhaseStationary);
+        uint32_t eventMask = kIOHIDDigitizerEventPosition;
+        if (phase == UITouchPhaseBegan || phase == UITouchPhaseEnded || phase == UITouchPhaseCancelled) {
+            eventMask |= (kIOHIDDigitizerEventRange | kIOHIDDigitizerEventTouch);
+        }
+
+        IOHIDEventRef handEvent = IOHIDEventCreateDigitizerEvent(
+            kCFAllocatorDefault, machTime, kIOHIDDigitizerTransducerTypeHand,
+            0, 0, eventMask, 0,
+            normX, normY, 0.0f, 0.0f, 0.0f,
+            isTouching, isTouching, 0
+        );
+
+        IOHIDEventRef fingerEvent = IOHIDEventCreateDigitizerFingerEvent(
+            kCFAllocatorDefault, machTime,
+            (uint32_t)fingerId, (uint32_t)fingerId,
+            eventMask, normX, normY, 0.0f,
+            isTouching ? 1.0f : 0.0f, 0.0f,
+            isTouching, isTouching, 0
+        );
+
+        if (handEvent && fingerEvent) {
+            IOHIDEventSetIntegerValue(handEvent, kIOHIDEventFieldDigitizerIsDisplayIntegrated, 1);
+            IOHIDEventSetIntegerValue(fingerEvent, kIOHIDEventFieldDigitizerIsDisplayIntegrated, 1);
+            IOHIDEventAppendEvent(handEvent, fingerEvent, 0);
+            CFRelease(fingerEvent);
+        }
+        return handEvent;
     }
 
     void DispatchTouchEvent(UITouchPhase phase, CGPoint point, NSInteger fingerId) {
-        dispatch_async(dispatch_get_main_queue(), ^{
+        dispatch_sync(dispatch_get_main_queue(), ^{
             if (!g_ActiveTouches) g_ActiveTouches = [NSMutableDictionary dictionary];
 
-            UIWindow *gameWin = FindGameWindow();
-            if (!gameWin) return;
+            UIView *targetView = nil;
+            UIWindow *gameWin = FindGameWindow(&targetView);
+            if (!gameWin || !targetView) return;
 
             NSNumber *key = @(fingerId);
             UITouch *touch = g_ActiveTouches[key];
@@ -225,8 +315,8 @@ namespace TouchEngine {
                 touch = [[UITouch alloc] init];
                 g_ActiveTouches[key] = touch;
 
-                UIView *hitView = [gameWin hitTest:point withEvent:nil];
-                if (!hitView) hitView = gameWin;
+                UIView *hitView = [targetView hitTest:[gameWin convertPoint:point toView:targetView] withEvent:nil];
+                if (!hitView) hitView = targetView;
 
                 SEL setWindowSel = NSSelectorFromString(@"setWindow:");
                 SEL setViewSel   = NSSelectorFromString(@"setView:");
@@ -247,10 +337,15 @@ namespace TouchEngine {
                 }
             }
 
+            IOHIDEventRef hidEvent = CreateTouchHIDEvent(phase, point, fingerId);
+            SEL setHidSel   = NSSelectorFromString(@"_setHidEvent:");
             SEL setPhaseSel = NSSelectorFromString(@"setPhase:");
             SEL setTimeSel  = NSSelectorFromString(@"setTimestamp:");
             SEL setLocSel   = NSSelectorFromString(@"_setLocationInWindow:resetPrevious:");
 
+            if (hidEvent && [touch respondsToSelector:setHidSel]) {
+                ((void (*)(id, SEL, IOHIDEventRef))objc_msgSend)(touch, setHidSel, hidEvent);
+            }
             if ([touch respondsToSelector:setPhaseSel]) {
                 ((void (*)(id, SEL, UITouchPhase))objc_msgSend)(touch, setPhaseSel, phase);
             }
@@ -266,8 +361,13 @@ namespace TouchEngine {
             if ([app respondsToSelector:touchesEventSel]) {
                 UIEvent *event = ((id (*)(id, SEL))objc_msgSend)(app, touchesEventSel);
                 if (event) {
-                    SEL clearSel = NSSelectorFromString(@"_clearTouches");
-                    SEL addSel   = NSSelectorFromString(@"_addTouch:forDelayedDelivery:");
+                    SEL setEventHidSel = NSSelectorFromString(@"_setHIDEvent:");
+                    SEL clearSel       = NSSelectorFromString(@"_clearTouches");
+                    SEL addSel         = NSSelectorFromString(@"_addTouch:forDelayedDelivery:");
+
+                    if (hidEvent && [event respondsToSelector:setEventHidSel]) {
+                        ((void (*)(id, SEL, IOHIDEventRef))objc_msgSend)(event, setEventHidSel, hidEvent);
+                    }
                     if ([event respondsToSelector:clearSel]) {
                         ((void (*)(id, SEL))objc_msgSend)(event, clearSel);
                     }
@@ -276,6 +376,10 @@ namespace TouchEngine {
                     }
                     [app sendEvent:event];
                 }
+            }
+
+            if (hidEvent) {
+                CFRelease(hidEvent);
             }
 
             if (phase == UITouchPhaseEnded || phase == UITouchPhaseCancelled) {
@@ -287,9 +391,9 @@ namespace TouchEngine {
     void TapAt(const float normPos[2], int holdMs = 30) {
         CGSize screen = [UIScreen mainScreen].bounds.size;
         CGPoint pt = ApplyJitter(CGPointMake(normPos[0] * screen.width, normPos[1] * screen.height));
-        DispatchTouchEvent(UITouchPhaseBegan, pt, 101);
+        DispatchTouchEvent(UITouchPhaseBegan, pt, 1);
         usleep(ApplyDelayJitter(holdMs) * 1000);
-        DispatchTouchEvent(UITouchPhaseEnded, pt, 101);
+        DispatchTouchEvent(UITouchPhaseEnded, pt, 1);
     }
 
     void SwipeSkillToward(const float normSkillPos[2], CGPoint targetScreenPt, int swipeDurationMs = 50) {
@@ -311,7 +415,7 @@ namespace TouchEngine {
             startPt.y + (dy / len) * dragRadius
         ));
 
-        DispatchTouchEvent(UITouchPhaseBegan, startPt, 102);
+        DispatchTouchEvent(UITouchPhaseBegan, startPt, 2);
         int steps = 4;
         int stepDelayUs = (ApplyDelayJitter(swipeDurationMs) * 1000) / steps;
         for (int i = 1; i <= steps; ++i) {
@@ -321,9 +425,9 @@ namespace TouchEngine {
                 startPt.y + (endPt.y - startPt.y) * t
             );
             usleep(stepDelayUs);
-            DispatchTouchEvent(UITouchPhaseMoved, mid, 102);
+            DispatchTouchEvent(UITouchPhaseMoved, mid, 2);
         }
-        DispatchTouchEvent(UITouchPhaseEnded, endPt, 102);
+        DispatchTouchEvent(UITouchPhaseEnded, endPt, 2);
     }
 
     void SwipeSkillS2OppositeToward(const float normSkillPos[2], CGPoint targetScreenPt, int swipeDurationMs = 55) {
@@ -345,7 +449,7 @@ namespace TouchEngine {
             startPt.y - (dy / len) * dragRadius
         ));
 
-        DispatchTouchEvent(UITouchPhaseBegan, startPt, 102);
+        DispatchTouchEvent(UITouchPhaseBegan, startPt, 2);
         int steps = 4;
         int stepDelayUs = (ApplyDelayJitter(swipeDurationMs) * 1000) / steps;
         for (int i = 1; i <= steps; ++i) {
@@ -355,9 +459,9 @@ namespace TouchEngine {
                 startPt.y + (endPt.y - startPt.y) * t
             );
             usleep(stepDelayUs);
-            DispatchTouchEvent(UITouchPhaseMoved, mid, 102);
+            DispatchTouchEvent(UITouchPhaseMoved, mid, 2);
         }
-        DispatchTouchEvent(UITouchPhaseEnded, endPt, 102);
+        DispatchTouchEvent(UITouchPhaseEnded, endPt, 2);
     }
 
     void SwipeSkillAwayFrom(const float normSkillPos[2], CGPoint targetScreenPt, int swipeDurationMs = 50) {
@@ -379,7 +483,7 @@ namespace TouchEngine {
             startPt.y - (dy / len) * dragRadius
         ));
 
-        DispatchTouchEvent(UITouchPhaseBegan, startPt, 102);
+        DispatchTouchEvent(UITouchPhaseBegan, startPt, 2);
         int steps = 4;
         int stepDelayUs = (ApplyDelayJitter(swipeDurationMs) * 1000) / steps;
         for (int i = 1; i <= steps; ++i) {
@@ -389,23 +493,24 @@ namespace TouchEngine {
                 startPt.y + (endPt.y - startPt.y) * t
             );
             usleep(stepDelayUs);
-            DispatchTouchEvent(UITouchPhaseMoved, mid, 102);
+            DispatchTouchEvent(UITouchPhaseMoved, mid, 2);
         }
-        DispatchTouchEvent(UITouchPhaseEnded, endPt, 102);
+        DispatchTouchEvent(UITouchPhaseEnded, endPt, 2);
     }
 
-    void ExecuteNakrothSelectedCombo(CGPoint targetPt, NakrothComboType comboType) {
-        BotState expected = BotState::SCANNING;
-        if (!g_BotState.compare_exchange_strong(expected, BotState::EXECUTING)) {
-            expected = BotState::LOCKED;
-            if (!g_BotState.compare_exchange_strong(expected, BotState::EXECUTING)) {
-                return;
-            }
+    // Cho phép kích hoạt thủ công kể cả khi đang IDLE hoặc SCANNING
+    void ExecuteNakSelectedCombo(CGPoint targetPt, NakComboType comboType, bool isManualTrigger = false) {
+        BotState prevState = g_BotState.load();
+        if (prevState == BotState::EXECUTING) return;
+        if (!isManualTrigger && prevState == BotState::IDLE) return;
+
+        if (!g_BotState.compare_exchange_strong(prevState, BotState::EXECUTING)) {
+            return;
         }
 
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
             switch (comboType) {
-                case NakrothComboType::GANK_LONG_RANGE: {
+                case NakComboType::GANK_LONG_RANGE: {
                     SwipeSkillS2OppositeToward(g_Cfg.skill2Pos, targetPt, 55);
                     usleep(ApplyDelayJitter(g_Cfg.delayAfterS2Ms) * 1000);
 
@@ -424,7 +529,7 @@ namespace TouchEngine {
                     SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50);
                     break;
                 }
-                case NakrothComboType::CLOSE_COMBAT: {
+                case NakComboType::CLOSE_COMBAT: {
                     SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50);
                     usleep(ApplyDelayJitter(g_Cfg.delayAfterS1_1Ms) * 1000);
 
@@ -443,7 +548,7 @@ namespace TouchEngine {
                     SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50);
                     break;
                 }
-                case NakrothComboType::POKE_AND_RUN: {
+                case NakComboType::POKE_AND_RUN: {
                     SwipeSkillS2OppositeToward(g_Cfg.skill2Pos, targetPt, 55);
                     usleep(ApplyDelayJitter(g_Cfg.delayAfterS2Ms) * 1000);
 
@@ -457,20 +562,23 @@ namespace TouchEngine {
                     break;
                 }
             }
-            usleep(80 * 1000);
-            g_BotState.store(BotState::SCANNING);
+            usleep(60 * 1000);
+            g_BotState.store(g_Cfg.masterEnable ? BotState::SCANNING : BotState::IDLE);
         });
     }
 }
 
 // ============================================================================
-// XỬ LÝ THỊ GIÁC MÁY TÍNH & TRACKER
+// XỬ LÝ THỊ GIÁC MÁY TÍNH (BLIT ENCODER BẤT ĐỒNG BỘ - KHÔNG LÀM TỤT FPS)
 // ============================================================================
 namespace VisionEngine {
     static dispatch_queue_t g_VisionQueue = dispatch_queue_create("com.px.vision.queue", DISPATCH_QUEUE_SERIAL);
     static std::atomic<bool> g_IsProcessing{false};
     static CFTimeInterval g_LastFrameTime = 0;
     static int g_NextTargetId = 1;
+    static id<MTLCommandQueue> g_BlitQueue = nil;
+    static id<MTLBuffer> g_ReadbackBuffer = nil;
+    static NSUInteger g_ReadbackBufferSize = 0;
 
     inline bool IsEnemyHpColor(uint8_t b, uint8_t g, uint8_t r) {
         return (r > 175 && g < 95 && b < 65 && (r - g) > 95);
@@ -515,9 +623,7 @@ namespace VisionEngine {
         return false;
     }
 
-    void ProcessFrameBuffer(std::vector<uint8_t>&& buffer, int texW, int texH, int stride, float scale) {
-        const uint8_t* data = buffer.data();
-
+    void ProcessFrameBuffer(const uint8_t* data, int texW, int texH, int stride, float scale) {
         if (!HasMinimapEnemyPresence(data, texW, texH, stride)) {
             std::lock_guard<std::mutex> lock(g_StateMutex);
             g_TrackedTargets.clear();
@@ -702,13 +808,14 @@ namespace VisionEngine {
         if (chosenTarget && g_Cfg.autoEngage && g_BotState.load() != BotState::EXECUTING) {
             g_BotState.store(BotState::LOCKED);
             CGPoint bodyAimPt = CGPointMake(chosenTarget->center.x, chosenTarget->center.y + 42.0f);
-            TouchEngine::ExecuteNakrothSelectedCombo(bodyAimPt, g_Cfg.selectedCombo);
+            TouchEngine::ExecuteNakSelectedCombo(bodyAimPt, g_Cfg.selectedCombo, false);
         }
 
         g_IsProcessing.store(false);
     }
 
-    void SubmitMetalTexture(id<MTLTexture> texture) {
+    // Dùng BlitCommandEncoder sao chép bất đồng bộ trên GPU -> Không chặn CPU, giữ nguyên 60 FPS
+    void SubmitMetalTextureAsync(id<MTLTexture> texture) {
         if (!g_Cfg.masterEnable || !texture) return;
         if (texture.pixelFormat != MTLPixelFormatBGRA8Unorm) return;
 
@@ -720,49 +827,77 @@ namespace VisionEngine {
         g_LastFrameTime = now;
         int w = (int)texture.width;
         int h = (int)texture.height;
-        int stride = w * 4;
+        NSUInteger bytesPerRow = (NSUInteger)(w * 4);
+        NSUInteger totalBytes = bytesPerRow * (NSUInteger)h;
         float scale = (float)[UIScreen mainScreen].scale;
 
-        std::vector<uint8_t> frameCopy(h * stride);
-        MTLRegion region = MTLRegionMake2D(0, 0, w, h);
-        [texture getBytes:frameCopy.data() bytesPerRow:stride fromRegion:region mipmapLevel:0];
+        id<MTLDevice> device = texture.device;
+        if (!g_BlitQueue) {
+            g_BlitQueue = [device newCommandQueue];
+        }
+        if (!g_ReadbackBuffer || g_ReadbackBufferSize < totalBytes) {
+            g_ReadbackBuffer = [device newBufferWithLength:totalBytes options:MTLResourceStorageModeShared];
+            g_ReadbackBufferSize = totalBytes;
+        }
 
-        dispatch_async(g_VisionQueue, [buf = std::move(frameCopy), w, h, stride, scale]() mutable {
-            ProcessFrameBuffer(std::move(buf), w, h, stride, scale);
-        });
+        id<MTLCommandBuffer> cmdBuf = [g_BlitQueue commandBuffer];
+        id<MTLBlitCommandEncoder> blit = [cmdBuf blitCommandEncoder];
+        [blit copyFromTexture:texture
+                  sourceSlice:0
+                  sourceLevel:0
+                 sourceOrigin:MTLOriginMake(0, 0, 0)
+                   sourceSize:MTLSizeMake(w, h, 1)
+                     toBuffer:g_ReadbackBuffer
+            destinationOffset:0
+       destinationBytesPerRow:bytesPerRow
+     destinationBytesPerImage:totalBytes];
+        [blit endEncoding];
+
+        [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> _Nonnull buffer) {
+            if (buffer.status == MTLCommandBufferStatusCompleted && g_ReadbackBuffer) {
+                const uint8_t* ptr = (const uint8_t*)[g_ReadbackBuffer contents];
+                dispatch_async(g_VisionQueue, ^{
+                    ProcessFrameBuffer(ptr, w, h, (int)bytesPerRow, scale);
+                });
+            } else {
+                g_IsProcessing.store(false);
+            }
+        }];
+        [cmdBuf commit];
     }
 }
 
 // ============================================================================
-// SWIZZLE CAMETALLAYER
+// SWIZZLE CAMETALLAYER (CHỈ BẬT READABLE KHI MASTER ENABLE = ON)
 // ============================================================================
 static id<CAMetalDrawable> (*orig_nextDrawable)(id self, SEL _cmd);
 static void (*orig_setFramebufferOnly)(id self, SEL _cmd, BOOL flag);
 
 static void hooked_setFramebufferOnly(id self, SEL _cmd, BOOL flag) {
-    orig_setFramebufferOnly(self, @selector(setFramebufferOnly:), NO);
+    orig_setFramebufferOnly(self, _cmd, g_Cfg.masterEnable ? NO : flag);
 }
 
 static id<CAMetalDrawable> hooked_nextDrawable(id self, SEL _cmd) {
-    if ([self respondsToSelector:@selector(framebufferOnly)]) {
+    CALayer *layer = (CALayer *)self;
+    if (![layer.name isEqualToString:@"PXOverlayLayer"] && [self respondsToSelector:@selector(framebufferOnly)]) {
         BOOL fbOnly = ((BOOL (*)(id, SEL))objc_msgSend)(self, @selector(framebufferOnly));
-        if (fbOnly && orig_setFramebufferOnly) {
-            orig_setFramebufferOnly(self, @selector(setFramebufferOnly:), NO);
+        BOOL desiredFbOnly = g_Cfg.masterEnable ? NO : YES;
+        if (fbOnly != desiredFbOnly && orig_setFramebufferOnly) {
+            orig_setFramebufferOnly(self, @selector(setFramebufferOnly:), desiredFbOnly);
         }
     }
 
     id<CAMetalDrawable> drawable = orig_nextDrawable(self, _cmd);
-    if (drawable && drawable.texture) {
-        CALayer *layer = (CALayer *)self;
+    if (drawable && drawable.texture && g_Cfg.masterEnable) {
         if (![layer.name isEqualToString:@"PXOverlayLayer"]) {
-            VisionEngine::SubmitMetalTexture(drawable.texture);
+            VisionEngine::SubmitMetalTextureAsync(drawable.texture);
         }
     }
     return drawable;
 }
 
 // ============================================================================
-// OVERLAY WINDOW & IMGUI RENDERER
+// OVERLAY WINDOW & IMGUI RENDERER (TẠM DỪNG MTKVIEW KHI KHÔNG VẼ ĐỂ TIẾT KIỆM GPU)
 // ============================================================================
 @interface PXNoFocusTextField : UITextField
 @end
@@ -810,7 +945,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     self.mtkView.clearColor = MTLClearColorMake(0, 0, 0, 0);
     self.mtkView.opaque = NO;
     self.mtkView.delegate = self;
-    self.mtkView.preferredFramesPerSecond = 60;
+    self.mtkView.preferredFramesPerSecond = 30;
     self.mtkView.layer.name = @"PXOverlayLayer";
     [self.view addSubview:self.mtkView];
 
@@ -845,9 +980,9 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     [self makeDraggable:self.menuToggleBtn];
     [self.view addSubview:self.menuToggleBtn];
 
-    self.btnC1 = [self createQuickButton:@"C1" frame:CGRectMake(132, 110, 42, 42) combo:NakrothComboType::GANK_LONG_RANGE];
-    self.btnC2 = [self createQuickButton:@"C2" frame:CGRectMake(180, 110, 42, 42) combo:NakrothComboType::CLOSE_COMBAT];
-    self.btnC3 = [self createQuickButton:@"C3" frame:CGRectMake(228, 110, 42, 42) combo:NakrothComboType::POKE_AND_RUN];
+    self.btnC1 = [self createQuickButton:@"C1" frame:CGRectMake(132, 110, 42, 42) combo:NakComboType::GANK_LONG_RANGE];
+    self.btnC2 = [self createQuickButton:@"C2" frame:CGRectMake(180, 110, 42, 42) combo:NakComboType::CLOSE_COMBAT];
+    self.btnC3 = [self createQuickButton:@"C3" frame:CGRectMake(228, 110, 42, 42) combo:NakComboType::POKE_AND_RUN];
 
     [self updateQuickButtonHighlights];
 
@@ -861,7 +996,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     ConfigStorage::LoadPreset("default");
 }
 
-- (UIButton *)createQuickButton:(NSString *)title frame:(CGRect)frame combo:(NakrothComboType)combo {
+- (UIButton *)createQuickButton:(NSString *)title frame:(CGRect)frame combo:(NakComboType)combo {
     UIButton *btn = [UIButton buttonWithType:UIButtonTypeCustom];
     btn.tag = 999;
     btn.frame = frame;
@@ -895,22 +1030,32 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     [pan setTranslation:CGPointZero inView:self.view];
 }
 
+// Bấm C1, C2, C3 kích hoạt ngay lập tức (nhắm mục tiêu đang khóa nếu có, hoặc tâm màn hình)
 - (void)onQuickComboTapped:(UIButton *)sender {
     int comboInt = [objc_getAssociatedObject(sender, "comboType") intValue];
-    g_Cfg.selectedCombo = (NakrothComboType)comboInt;
+    g_Cfg.selectedCombo = (NakComboType)comboInt;
     [self updateQuickButtonHighlights];
 
-    CGPoint centerPt = CGPointMake(self.mtkView.bounds.size.width * 0.5f, self.mtkView.bounds.size.height * 0.5f);
-    TouchEngine::ExecuteNakrothSelectedCombo(centerPt, g_Cfg.selectedCombo);
+    CGPoint aimPt = CGPointMake(self.mtkView.bounds.size.width * 0.5f, self.mtkView.bounds.size.height * 0.5f);
+    {
+        std::lock_guard<std::mutex> lock(g_StateMutex);
+        for (const auto& t : g_TrackedTargets) {
+            if (t.id == g_CurrentLockedId) {
+                aimPt = CGPointMake(t.center.x, t.center.y + 42.0f);
+                break;
+            }
+        }
+    }
+    TouchEngine::ExecuteNakSelectedCombo(aimPt, g_Cfg.selectedCombo, true);
 }
 
 - (void)updateQuickButtonHighlights {
     UIColor *normalCol = [UIColor colorWithRed:0.20 green:0.20 blue:0.30 alpha:g_Cfg.uiOpacity];
     UIColor *activeCol = [UIColor colorWithRed:0.90 green:0.50 blue:0.10 alpha:g_Cfg.uiOpacity];
 
-    self.btnC1.backgroundColor = (g_Cfg.selectedCombo == NakrothComboType::GANK_LONG_RANGE) ? activeCol : normalCol;
-    self.btnC2.backgroundColor = (g_Cfg.selectedCombo == NakrothComboType::CLOSE_COMBAT) ? activeCol : normalCol;
-    self.btnC3.backgroundColor = (g_Cfg.selectedCombo == NakrothComboType::POKE_AND_RUN) ? activeCol : normalCol;
+    self.btnC1.backgroundColor = (g_Cfg.selectedCombo == NakComboType::GANK_LONG_RANGE) ? activeCol : normalCol;
+    self.btnC2.backgroundColor = (g_Cfg.selectedCombo == NakComboType::CLOSE_COMBAT) ? activeCol : normalCol;
+    self.btnC3.backgroundColor = (g_Cfg.selectedCombo == NakComboType::POKE_AND_RUN) ? activeCol : normalCol;
 
     self.btnC1.hidden = !g_Cfg.showQuickComboBtns;
     self.btnC2.hidden = !g_Cfg.showQuickComboBtns;
@@ -966,7 +1111,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 
 - (void)RenderImGuiTabs {
     ImGui::SetNextWindowSize(ImVec2(480, 380), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("PX · Nakroth Quick Combos", &g_ShowImGuiMenu, ImGuiWindowFlags_NoCollapse)) {
+    if (!ImGui::Begin("PX · Nak Quick Combos", &g_ShowImGuiMenu, ImGuiWindowFlags_NoCollapse)) {
         ImVec2 pos = ImGui::GetWindowPos();
         ImVec2 size = ImGui::GetWindowSize();
         g_ImGuiWindowRect = CGRectMake(pos.x, pos.y, size.x, size.y);
@@ -978,7 +1123,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     ImVec2 size = ImGui::GetWindowSize();
     g_ImGuiWindowRect = CGRectMake(pos.x, pos.y, size.x, size.y);
 
-    if (ImGui::BeginTabBar("PXNakrothTabs")) {
+    if (ImGui::BeginTabBar("PXNakTabs")) {
         if (ImGui::BeginTabItem("Combo & Nut Nhanh")) {
             ImGui::Checkbox("Auto-Engage (Tu dong khi khoa muc tieu)", &g_Cfg.autoEngage);
             if (ImGui::Checkbox("Hien thi cum 3 nut C1 C2 C3 tren man hinh", &g_Cfg.showQuickComboBtns)) {
@@ -1009,12 +1154,20 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
             ImGui::Separator();
             if (ImGui::Button("Test Chay Combo Da Chon")) {
                 CGPoint centerPt = CGPointMake(self.mtkView.bounds.size.width * 0.5f, self.mtkView.bounds.size.height * 0.5f);
-                TouchEngine::ExecuteNakrothSelectedCombo(centerPt, g_Cfg.selectedCombo);
+                TouchEngine::ExecuteNakSelectedCombo(centerPt, g_Cfg.selectedCombo, true);
             }
 
             ImGui::Separator();
             ImGui::SliderFloat("Touch Jitter (px)", &g_Cfg.posJitterPx, 0.0f, 12.0f, "%.1f");
             ImGui::SliderInt("Delay Jitter (ms)", &g_Cfg.timeJitterMs, 0, 45);
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Toa Do Nut")) {
+            ImGui::SliderFloat2("Chieu 1 (X, Y)", g_Cfg.skill1Pos, 0.5f, 1.0f, "%.2f");
+            ImGui::SliderFloat2("Chieu 2 (X, Y)", g_Cfg.skill2Pos, 0.5f, 1.0f, "%.2f");
+            ImGui::SliderFloat2("Chieu 3 (X, Y)", g_Cfg.skill3Pos, 0.5f, 1.0f, "%.2f");
+            ImGui::SliderFloat2("Danh Thuong (X, Y)", g_Cfg.attackPos, 0.5f, 1.0f, "%.2f");
             ImGui::EndTabItem();
         }
 
@@ -1048,6 +1201,18 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 }
 
 - (void)drawInMTKView:(MTKView *)view {
+    bool hasEspToDraw = false;
+    if (g_Cfg.masterEnable && g_Cfg.drawDebugEsp) {
+        std::lock_guard<std::mutex> lock(g_StateMutex);
+        hasEspToDraw = !g_TrackedTargets.empty();
+    }
+
+    // Nếu không mở menu và không có khung ESP nào cần vẽ thì bỏ qua render pass để không tốn GPU
+    if (!g_ShowImGuiMenu && !hasEspToDraw) {
+        g_ImGuiWindowRect = CGRectZero;
+        return;
+    }
+
     MTLRenderPassDescriptor *rpd = view.currentRenderPassDescriptor;
     if (!rpd) return;
 
@@ -1062,7 +1227,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     ImGui_ImplMetal_NewFrame(rpd);
     ImGui::NewFrame();
 
-    if (g_Cfg.masterEnable && g_Cfg.drawDebugEsp) {
+    if (hasEspToDraw) {
         ImDrawList *bg = ImGui::GetBackgroundDrawList();
         std::lock_guard<std::mutex> lock(g_StateMutex);
         for (const auto& t : g_TrackedTargets) {
