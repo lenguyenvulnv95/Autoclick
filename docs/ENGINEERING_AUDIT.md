@@ -74,3 +74,18 @@ Add compile-time checks and unit tests for pure helpers, configuration encode/de
 ## Explicitly out of scope for this phase
 
 App Store policy and release compliance review.
+
+## Metal capture review — 2026-11-22
+
+A focused source review of `VisionEngine::SubmitMetalTextureAsync` identified failure paths after the processing gate was acquired. Previously, failures to create the command queue, readback buffer, command buffer, or blit encoder could leave the processing flag set, preventing subsequent frames from entering the pipeline.
+
+A focused change is proposed in PR #2:
+- Validate texture dimensions and readback-size arithmetic before allocation.
+- Release the processing gate on resource-creation and GPU-completion failures.
+- Recreate the blit queue if the source Metal device changes.
+- Capture the specific readback buffer in the completion handler rather than looking up a mutable global buffer.
+- Emit diagnostic messages for recoverable capture failures.
+
+PR: https://github.com/lenguyenvulnv95/Autoclick/pull/2
+
+The change does not alter image classification, ROI definitions, target tracking/selection, or touch/combo behavior. It has been reviewed at source-diff level only; a successful iOS build and on-device lifecycle test are still outstanding.
