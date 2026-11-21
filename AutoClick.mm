@@ -895,12 +895,6 @@ static id<CAMetalDrawable> hooked_nextDrawable(id self, SEL _cmd) {
 // ============================================================================
 // OVERLAY WINDOW & IMGUI RENDERER (ĐÃ SỬA ĐÓNG/MỞ MENU BẰNG NÚT PX & DẤU X)
 // ============================================================================
-@interface PXNoFocusTextField : UITextField
-@end
-@implementation PXNoFocusTextField
-- (BOOL)canBecomeFirstResponder { return NO; }
-@end
-
 static CGRect g_ImGuiWindowRect = CGRectZero;
 
 @interface PXPassthroughWindow : UIWindow
@@ -925,6 +919,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 @interface PXOverlayController : UIViewController <MTKViewDelegate>
 @property (nonatomic, strong) MTKView *mtkView;
 @property (nonatomic, strong) id<MTLCommandQueue> commandQueue;
+@property (nonatomic, assign) BOOL imguiInitialized;
 @property (nonatomic, strong) UIButton *floatingToggleBtn;
 @property (nonatomic, strong) UIButton *menuToggleBtn;
 @property (nonatomic, strong) UIButton *btnC1;
@@ -939,7 +934,15 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     self.view.backgroundColor = [UIColor clearColor];
 
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+    if (!device) {
+        NSLog(@"[PXOverlay] Metal device unavailable");
+        return;
+    }
     self.commandQueue = [device newCommandQueue];
+    if (!self.commandQueue) {
+        NSLog(@"[PXOverlay] Metal command queue creation failed");
+        return;
+    }
 
     self.mtkView = [[MTKView alloc] initWithFrame:self.view.bounds device:device];
     self.mtkView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -957,7 +960,12 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     ImGui::StyleColorsDark();
     ImGui::GetStyle().WindowRounding = 8.0f;
     ImGui::GetStyle().FrameRounding = 4.0f;
-    ImGui_ImplMetal_Init(device);
+    self.imguiInitialized = ImGui_ImplMetal_Init(device);
+    if (!self.imguiInitialized) {
+        NSLog(@"[PXOverlay] ImGui Metal backend initialization failed");
+        ImGui::DestroyContext();
+        return;
+    }
 
     self.floatingToggleBtn = [UIButton buttonWithType:UIButtonTypeCustom];
     self.floatingToggleBtn.tag = 999;
@@ -1078,8 +1086,10 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     g_ShowImGuiMenu = !g_ShowImGuiMenu;
     if (!g_ShowImGuiMenu) {
         g_ImGuiWindowRect = CGRectZero;
-        ImGuiIO &io = ImGui::GetIO();
-        io.AddMouseButtonEvent(0, false);
+        if (self.imguiInitialized && ImGui::GetCurrentContext() != nullptr) {
+            ImGuiIO &io = ImGui::GetIO();
+            io.AddMouseButtonEvent(0, false);
+        }
     }
     [self.view bringSubviewToFront:self.floatingToggleBtn];
     [self.view bringSubviewToFront:self.menuToggleBtn];
@@ -1102,7 +1112,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 }
 
 - (void)updateImGuiTouch:(NSSet<UITouch *> *)touches phase:(UITouchPhase)phase {
-    if (!g_ShowImGuiMenu) return;
+    if (!g_ShowImGuiMenu || !self.imguiInitialized || ImGui::GetCurrentContext() == nullptr) return;
     UITouch *touch = [touches anyObject];
     if (!touch) return;
     CGPoint loc = [touch locationInView:self.mtkView];
@@ -1228,27 +1238,33 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
         hasEspToDraw = !g_TrackedTargets.empty();
     }
 
+    if (!self.imguiInitialized || ImGui::GetCurrentContext() == nullptr || !self.commandQueue || !view.device) return;
     MTLRenderPassDescriptor *rpd = view.currentRenderPassDescriptor;
-    if (!rpd) return;
+    id<CAMetalDrawable> drawable = view.currentDrawable;
+    if (!rpd || !drawable) return;
 
     // Khi menu vừa đóng và không có ESP, clear frame sạch sẽ 1 lần để xóa bóng menu cũ
     if (!g_ShowImGuiMenu && !hasEspToDraw) {
         g_ImGuiWindowRect = CGRectZero;
         id<MTLCommandBuffer> cmdBuf = [self.commandQueue commandBuffer];
+        if (!cmdBuf) return;
         id<MTLRenderCommandEncoder> encoder = [cmdBuf renderCommandEncoderWithDescriptor:rpd];
+        if (!encoder) return;
         [encoder endEncoding];
-        [cmdBuf presentDrawable:view.currentDrawable];
+        [cmdBuf presentDrawable:drawable];
         [cmdBuf commit];
         return;
     }
 
     ImGuiIO &io = ImGui::GetIO();
     io.DisplaySize = ImVec2((float)view.bounds.size.width, (float)view.bounds.size.height);
-    float scale = (float)[UIScreen mainScreen].scale;
+    float scale = (float)(view.window.screen.scale ?: [UIScreen mainScreen].scale);
     io.DisplayFramebufferScale = ImVec2(scale, scale);
 
     id<MTLCommandBuffer> cmdBuf = [self.commandQueue commandBuffer];
+    if (!cmdBuf) return;
     id<MTLRenderCommandEncoder> encoder = [cmdBuf renderCommandEncoderWithDescriptor:rpd];
+    if (!encoder) return;
 
     ImGui_ImplMetal_NewFrame(rpd);
     ImGui::NewFrame();
@@ -1279,7 +1295,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cmdBuf, encoder);
 
     [encoder endEncoding];
-    [cmdBuf presentDrawable:view.currentDrawable];
+    [cmdBuf presentDrawable:drawable];
     [cmdBuf commit];
 }
 
@@ -1314,23 +1330,8 @@ static void SetupOverlayWindow() {
     g_OverlayWindow.backgroundColor = [UIColor clearColor];
     g_OverlayWindow.rootViewController = [[PXOverlayController alloc] init];
 
-    if (g_Cfg.stealthMode) {
-        PXNoFocusTextField *secureField = [[PXNoFocusTextField alloc] initWithFrame:g_OverlayWindow.bounds];
-        secureField.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        secureField.secureTextEntry = YES;
-        secureField.userInteractionEnabled = YES;
-        secureField.backgroundColor = [UIColor clearColor];
-
-        UIView *secureContainer = secureField.subviews.firstObject;
-        if (secureContainer) {
-            secureContainer.frame = g_OverlayWindow.bounds;
-            secureContainer.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-            secureContainer.userInteractionEnabled = YES;
-            [g_OverlayWindow addSubview:secureField];
-            [secureContainer addSubview:g_OverlayWindow.rootViewController.view];
-        }
-    }
-
+    // Keep the controller view in UIWindow's normal UIKit hierarchy.
+    // Reparenting it into a secure UITextField's private subview can prevent rendering on newer iOS.
     g_OverlayWindow.hidden = NO;
 }
 
