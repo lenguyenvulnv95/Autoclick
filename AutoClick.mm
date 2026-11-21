@@ -17,6 +17,8 @@
 #include <atomic>
 #include <algorithm>
 
+#include "HealthBarDetector.hpp"
+
 #include "imgui.h"
 #include "imgui_impl_metal.h"
 
@@ -578,7 +580,10 @@ namespace VisionEngine {
     static NSUInteger g_ReadbackBufferSize = 0;
 
     inline bool IsEnemyHpColor(uint8_t b, uint8_t g, uint8_t r) {
-        return (r > 175 && g < 95 && b < 65 && (r - g) > 95);
+        // Tolerant HSV classification replaces the previous narrow RGB threshold.
+        // This is only a red-HP candidate filter; shape and Level validation
+        // remain separate stages before a candidate can be confirmed as a hero.
+        return HealthBarDetector::IsEnemyHeroRedPixel(b, g, r);
     }
 
     bool CheckContextAboveHp(const uint8_t* bgra, int width, int height, int stride, int centerX, int topY) {
