@@ -4,6 +4,9 @@
 
 #include "LevelRecognizer.hpp"
 
+#include <algorithm>
+#include <cmath>
+
 namespace LevelRecognizer {
 
 bool RecognizeLevelFromBGRA(const uint8_t* bgra,
