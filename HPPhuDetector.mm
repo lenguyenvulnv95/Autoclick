@@ -6,6 +6,7 @@
 #include <cmath>
 #include <mutex>
 #include <vector>
+#include <cstdint>
 
 namespace HPPhuBridge {
 struct HPBox { CGRect rect; int type; float confidence; };
@@ -87,7 +88,7 @@ static bool HPBadgeGeometry(const unsigned char *pixels, int width, int height, 
 }
 
 
-void SubmitBGRA(const unsigned char *pixels, int width, int height, int stride, double capturedAtSeconds) {
+static void DetectScaledBGRA(const unsigned char *pixels, int width, int height, int stride, double capturedAtSeconds) {
     if (!pixels || width < 64 || height < 64 || width > 8192 || height > 8192 || stride < width * 4) return;
 
     const double now = capturedAtSeconds;
@@ -281,6 +282,34 @@ void SubmitBGRA(const unsigned char *pixels, int width, int height, int stride, 
 
 }
 
+
+void SubmitBGRA(const unsigned char* pixels, int width, int height, int stride,
+                double capturedAtSeconds) {
+    if (!pixels || width < 64 || height < 64 || width > 8192 || height > 8192 ||
+        stride < width * 4 || !std::isfinite(capturedAtSeconds) ||
+        capturedAtSeconds <= 0.0) return;
+    // HP-phu V4 detects on a <=640px capture. Autoclick already owns the
+    // Metal readback, so downscale that BGRA frame instead of adding a hook.
+    constexpr int kMaxWidth = 640;
+    if (width <= kMaxWidth) {
+        DetectScaledBGRA(pixels, width, height, stride, capturedAtSeconds);
+        return;
+    }
+    const int outW = kMaxWidth;
+    const int outH = std::max(1, (int)std::round((double)height * outW / width));
+    const int outStride = outW * 4;
+    std::vector<unsigned char> scaled((size_t)outStride * outH);
+    for (int y = 0; y < outH; ++y) {
+        const int sy = std::min(height - 1, (int)((int64_t)y * height / outH));
+        for (int x = 0; x < outW; ++x) {
+            const int sx = std::min(width - 1, (int)((int64_t)x * width / outW));
+            const unsigned char* src = pixels + (size_t)sy * stride + (size_t)sx * 4;
+            unsigned char* dst = scaled.data() + (size_t)y * outStride + (size_t)x * 4;
+            dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2]; dst[3] = src[3];
+        }
+    }
+    DetectScaledBGRA(scaled.data(), outW, outH, outStride, capturedAtSeconds);
+}
 
 SnapshotBatch ReadDetectorSnapshot(double nowSeconds, double maxAgeSeconds) {
     return gMailbox.ReadFresh(nowSeconds, maxAgeSeconds);
