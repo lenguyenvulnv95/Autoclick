@@ -1105,6 +1105,20 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     [self.view addGestureRecognizer:stealthTap];
 
     ConfigStorage::LoadPreset("default");
+    [self syncControlButtonFramesFromConfig];
+}
+
+- (void)syncControlButtonFramesFromConfig {
+    CGSize size = self.view.bounds.size;
+    const CGFloat d = 42.0f;
+    self.btnC1.center = CGPointMake(g_Cfg.skill1Pos[0] * size.width, g_Cfg.skill1Pos[1] * size.height);
+    self.btnC2.center = CGPointMake(g_Cfg.skill2Pos[0] * size.width, g_Cfg.skill2Pos[1] * size.height);
+    self.btnC3.center = CGPointMake(g_Cfg.skill3Pos[0] * size.width, g_Cfg.skill3Pos[1] * size.height);
+    self.btnAA.center = CGPointMake(g_Cfg.attackPos[0] * size.width, g_Cfg.attackPos[1] * size.height);
+    self.btnC1.bounds = CGRectMake(0, 0, d, d);
+    self.btnC2.bounds = CGRectMake(0, 0, d, d);
+    self.btnC3.bounds = CGRectMake(0, 0, d, d);
+    self.btnAA.bounds = CGRectMake(0, 0, d, d);
 }
 
 - (UIButton *)createQuickButton:(NSString *)title frame:(CGRect)frame combo:(NakComboType)combo {
@@ -1354,7 +1368,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
             ImGui::Separator();
             if (ImGui::Button("Luu Default")) ConfigStorage::SavePreset("default");
             ImGui::SameLine();
-            if (ImGui::Button("Tai Default")) ConfigStorage::LoadPreset("default");
+            if (ImGui::Button("Tai Default")) { ConfigStorage::LoadPreset("default"); [self syncControlButtonFramesFromConfig]; [self updateQuickButtonHighlights]; }
             ImGui::EndTabItem();
         }
 
