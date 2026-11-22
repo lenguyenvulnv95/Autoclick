@@ -35,7 +35,30 @@ jobs:
         run: |
           unzip -q Picture.zip -d /tmp/picture-reference
           clang++ -std=c++17 -fobjc-arc -framework Foundation -framework Vision -framework ImageIO -framework CoreGraphics tests/ReferenceImageOCR.mm -o /tmp/reference-image-ocr
-          find /tmp/picture-reference -type f \\( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \\) -print0 | xargs -0 /tmp/reference-image-ocr
+          find /tmp/picture-reference -type f | grep -Ei '\\.(jpg|jpeg|png)
+
+      - name: Compile AutoClick.dylib
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          clang++ -arch arm64 -isysroot $SDK -miphoneos-version-min=13.0 \
+          -std=c++17 -fobjc-arc -dynamiclib \
+          -I. -Iimgui -Iimgui/backends \
+          -framework UIKit -framework Foundation -framework CoreGraphics \
+          -framework QuartzCore -framework Metal -framework MetalKit \
+          -framework Accelerate -framework IOKit -framework Vision \
+          -install_name @rpath/AutoClick.dylib \
+          -lc++ \
+          -o AutoClick.dylib \
+          AutoClick.mm LevelRecognizer.mm \
+          imgui/imgui.cpp imgui/imgui_draw.cpp imgui/imgui_tables.cpp imgui/imgui_widgets.cpp \
+          imgui/backends/imgui_impl_metal.mm
+
+      - name: Upload AutoClick.dylib
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutoClick.dylib
+          path: AutoClick.dylib
+ | xargs /tmp/reference-image-ocr
 
       - name: Compile AutoClick.dylib
         run: |
