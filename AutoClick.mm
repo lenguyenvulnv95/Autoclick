@@ -735,6 +735,10 @@ namespace VisionEngine {
     static int g_NextTargetId = 1;
     static std::atomic<int> g_HPPhuObservedBars{0};
     static std::atomic<uint64_t> g_HPPhuLastFrameId{0};
+    static std::atomic<int> g_HPPhuMatchedVerified{0};
+    // Auto-Engage gate telemetry: 0=waiting, 1=disabled, 2=no verified target,
+    // 3=level missing, 4=confidence low, 5=combo executing, 6=ready.
+    static std::atomic<int> g_AutoEngageGate{0};
     static id<MTLBuffer> g_ReadbackBuffer = nil;
     static NSUInteger g_ReadbackBufferSize = 0;
     static std::atomic<int> g_FullScreenScanFrames{0};
@@ -841,6 +845,26 @@ namespace VisionEngine {
                 observation.confidence
             });
         }
+
+        // Spatially correlate HP-phu bars with independently verified legacy
+        // observations. HP-phu alone does not establish hero/level/HP identity.
+        // Keep the two detectors' measurements separate until calibration.
+        int corroborated = 0;
+        for (const auto& target : detectedTargets) {
+            if (target.level < 1 || target.level > 16 ||
+                target.levelConfidence < 0.45f ||
+                target.confidence < 0.75f) continue;
+            for (const auto& bar : hpBars) {
+                const float dx = (float)(target.centerPt.x - bar.barCenterPt.x);
+                const float dy = (float)(target.centerPt.y - bar.barCenterPt.y);
+                if (std::fabs(dx) <= std::max(30.0f, target.widthPt * 0.65f) &&
+                    std::fabs(dy) <= 24.0f && bar.missedFrames == 0) {
+                    ++corroborated;
+                    break;
+                }
+            }
+        }
+        g_HPPhuMatchedVerified.store(corroborated, std::memory_order_release);
 
         std::lock_guard<std::mutex> lock(g_StateMutex);
         for (auto& target : g_TrackedTargets) {
@@ -971,6 +995,12 @@ namespace VisionEngine {
         if (chosenTarget) g_CurrentLockedId = chosenTarget->id;
         else g_CurrentLockedId = -1;
 
+        const int engageGate = !cfg.autoEngage ? 1 :
+            !chosenTarget ? 2 :
+            chosenTarget->level <= 0 ? 3 :
+            chosenTarget->detectionConfidence < 0.75f ? 4 :
+            g_BotState.load() == BotState::EXECUTING ? 5 : 6;
+        g_AutoEngageGate.store(engageGate, std::memory_order_release);
         if (chosenTarget && chosenTarget->level > 0 &&
             chosenTarget->detectionConfidence >= 0.75f &&
             cfg.autoEngage && g_BotState.load() != BotState::EXECUTING) {
@@ -1756,6 +1786,16 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
             ImGui::Text("HP-phu: %d thanh HP | Frame: %llu (chưa xác thực mục tiêu)",
                         VisionEngine::g_HPPhuObservedBars.load(std::memory_order_acquire),
                         (unsigned long long)VisionEngine::g_HPPhuLastFrameId.load(std::memory_order_acquire));
+            ImGui::Text("HP-phu matched verified bars: %d",
+                        VisionEngine::g_HPPhuMatchedVerified.load(std::memory_order_acquire));
+            const int gate = VisionEngine::g_AutoEngageGate.load(std::memory_order_acquire);
+            const char* gateText = gate == 1 ? "Auto-Engage OFF" :
+                gate == 2 ? "No confirmed selectable target" :
+                gate == 3 ? "Target level missing" :
+                gate == 4 ? "Target confidence below 0.75" :
+                gate == 5 ? "Combo already executing" :
+                gate == 6 ? "Ready / trigger requested" : "Waiting for frame";
+            ImGui::Text("Auto-Engage gate: %s", gateText);
             ImGui::Text("Tracked targets: %d | Locked ID: %d",
                         (int)monitorTargets.size(), lockedTargetId);
             ImGui::Separator();
