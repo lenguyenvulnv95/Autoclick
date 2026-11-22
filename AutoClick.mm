@@ -223,7 +223,23 @@ static int g_CurrentLockedId = -1;
 // BỘ TỔNG HỢP CHẠM & VUỐT (IOHIDEVENT + UNITY VIEW TARGETING + NAK COMBOS)
 // ============================================================================
 namespace TouchEngine {
+    static std::atomic<uint64_t> g_HoldGeneration{0};
     static std::mt19937 rng(std::random_device{}());
+
+    bool HoldIsActive(uint64_t token) {
+        return token != 0 && g_HoldGeneration.load(std::memory_order_acquire) == token;
+    }
+
+    bool WaitForHold(uint64_t token, int milliseconds) {
+        int remaining = std::max(0, milliseconds);
+        while (remaining > 0) {
+            if (!HoldIsActive(token)) return false;
+            int slice = std::min(remaining, 5);
+            usleep(slice * 1000);
+            remaining -= slice;
+        }
+        return HoldIsActive(token);
+    }
     static NSMutableDictionary<NSNumber *, UITouch *> *g_ActiveTouches = nil;
 
     CGPoint ApplyJitter(CGPoint pt) {
@@ -505,67 +521,87 @@ namespace TouchEngine {
         DispatchTouchEvent(UITouchPhaseEnded, endPt, 2);
     }
 
+    void RunComboSequence(CGPoint targetPt, NakComboType comboType, uint64_t token) {
+        auto active = [&]() { return token == 0 || HoldIsActive(token); };
+        auto delay = [&](int ms) { return token == 0 ? (usleep(std::max(0, ms) * 1000), true) : WaitForHold(token, ms); };
+
+        switch (comboType) {
+            case NakComboType::GANK_LONG_RANGE:
+                // C1: S2 -> S1 -> S1 -> S3 -> AA
+                if (!active()) return;
+                SwipeSkillS2OppositeToward(g_Cfg.skill2Pos, targetPt, 55);
+                if (!delay(ApplyDelayJitter(g_Cfg.delayAfterS2Ms))) return;
+                SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50);
+                if (!delay(ApplyDelayJitter(g_Cfg.delayAfterS1_1Ms))) return;
+                SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50);
+                if (!delay(ApplyDelayJitter(g_Cfg.delayAfterS1_2Ms))) return;
+                TapAt(g_Cfg.skill3Pos, 35);
+                if (!delay(ApplyDelayJitter(g_Cfg.delayAfterS3Ms))) return;
+                if (active()) TapAt(g_Cfg.attackPos, 28);
+                break;
+
+            case NakComboType::CLOSE_COMBAT:
+                // C2: S1 -> AA -> S3 -> S2 -> AA -> S1
+                if (!active()) return;
+                SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50);
+                if (!delay(ApplyDelayJitter(g_Cfg.delayAfterS1_1Ms))) return;
+                TapAt(g_Cfg.attackPos, 28);
+                if (!delay(ApplyDelayJitter(g_Cfg.delayAfterEmpAAMs))) return;
+                TapAt(g_Cfg.skill3Pos, 35);
+                if (!delay(ApplyDelayJitter(g_Cfg.delayAfterS3Ms))) return;
+                SwipeSkillS2OppositeToward(g_Cfg.skill2Pos, targetPt, 55);
+                if (!delay(ApplyDelayJitter(g_Cfg.delayAfterS2Ms))) return;
+                TapAt(g_Cfg.attackPos, 28);
+                if (!delay(90)) return;
+                if (active()) SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50);
+                break;
+
+            case NakComboType::POKE_AND_RUN:
+                // C3: S2 -> S1 -> AA -> S1 retreat
+                if (!active()) return;
+                SwipeSkillS2OppositeToward(g_Cfg.skill2Pos, targetPt, 55);
+                if (!delay(ApplyDelayJitter(g_Cfg.delayAfterS2Ms))) return;
+                SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50);
+                if (!delay(ApplyDelayJitter(g_Cfg.delayAfterS1_1Ms))) return;
+                TapAt(g_Cfg.attackPos, 30);
+                if (!delay(ApplyDelayJitter(g_Cfg.delayAfterEmpAAMs))) return;
+                if (active()) SwipeSkillAwayFrom(g_Cfg.skill1Pos, targetPt, 50);
+                break;
+        }
+    }
+
+    void StartHeldCombo(CGPoint targetPt, NakComboType comboType) {
+        const uint64_t token = g_HoldGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            while (HoldIsActive(token)) {
+                RunComboSequence(targetPt, comboType, token);
+                if (!WaitForHold(token, 70)) break;
+            }
+        });
+    }
+
+    void StartHeldAttack() {
+        const uint64_t token = g_HoldGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            while (HoldIsActive(token)) {
+                TapAt(g_Cfg.attackPos, 28);
+                if (!WaitForHold(token, 75)) break;
+            }
+        });
+    }
+
+    void StopHeldAction() {
+        g_HoldGeneration.fetch_add(1, std::memory_order_acq_rel);
+    }
+
     void ExecuteNakSelectedCombo(CGPoint targetPt, NakComboType comboType, bool isManualTrigger = false) {
         BotState prevState = g_BotState.load();
         if (prevState == BotState::EXECUTING) return;
         if (!isManualTrigger && prevState == BotState::IDLE) return;
-
-        if (!g_BotState.compare_exchange_strong(prevState, BotState::EXECUTING)) {
-            return;
-        }
+        if (!g_BotState.compare_exchange_strong(prevState, BotState::EXECUTING)) return;
 
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-            switch (comboType) {
-                case NakComboType::GANK_LONG_RANGE: {
-                    // C1: S2 (vuot nguoc) -> S1 -> S1 lan 2 -> S3 -> AA
-                    SwipeSkillS2OppositeToward(g_Cfg.skill2Pos, targetPt, 55);
-                    usleep(ApplyDelayJitter(g_Cfg.delayAfterS2Ms) * 1000);
-
-                    SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50);
-                    usleep(ApplyDelayJitter(g_Cfg.delayAfterS1_1Ms) * 1000);
-
-                    SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50);
-                    usleep(ApplyDelayJitter(g_Cfg.delayAfterS1_2Ms) * 1000);
-
-                    TapAt(g_Cfg.skill3Pos, 35);
-                    usleep(ApplyDelayJitter(g_Cfg.delayAfterS3Ms) * 1000);
-
-                    TapAt(g_Cfg.attackPos, 28);
-                    break;
-                }
-                case NakComboType::CLOSE_COMBAT: {
-                    SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50);
-                    usleep(ApplyDelayJitter(g_Cfg.delayAfterS1_1Ms) * 1000);
-
-                    TapAt(g_Cfg.attackPos, 28);
-                    usleep(ApplyDelayJitter(g_Cfg.delayAfterEmpAAMs) * 1000);
-
-                    TapAt(g_Cfg.skill3Pos, 35);
-                    usleep(ApplyDelayJitter(g_Cfg.delayAfterS3Ms) * 1000);
-
-                    SwipeSkillS2OppositeToward(g_Cfg.skill2Pos, targetPt, 55);
-                    usleep(ApplyDelayJitter(g_Cfg.delayAfterS2Ms) * 1000);
-
-                    TapAt(g_Cfg.attackPos, 28);
-                    usleep(90 * 1000);
-
-                    SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50);
-                    break;
-                }
-                case NakComboType::POKE_AND_RUN: {
-                    SwipeSkillS2OppositeToward(g_Cfg.skill2Pos, targetPt, 55);
-                    usleep(ApplyDelayJitter(g_Cfg.delayAfterS2Ms) * 1000);
-
-                    SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50);
-                    usleep(ApplyDelayJitter(g_Cfg.delayAfterS1_1Ms) * 1000);
-
-                    TapAt(g_Cfg.attackPos, 30);
-                    usleep(ApplyDelayJitter(g_Cfg.delayAfterEmpAAMs) * 1000);
-
-                    SwipeSkillAwayFrom(g_Cfg.skill1Pos, targetPt, 50);
-                    break;
-                }
-            }
+            RunComboSequence(targetPt, comboType, 0);
             usleep(60 * 1000);
             g_BotState.store(g_Cfg.masterEnable ? BotState::SCANNING : BotState::IDLE);
         });
@@ -968,6 +1004,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 @property (nonatomic, strong) UIButton *btnC1;
 @property (nonatomic, strong) UIButton *btnC2;
 @property (nonatomic, strong) UIButton *btnC3;
+@property (nonatomic, strong) UIButton *btnAA;
 @end
 
 @implementation PXOverlayController
@@ -1035,6 +1072,8 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     self.btnC1 = [self createQuickButton:@"C1" frame:CGRectMake(132, 110, 42, 42) combo:NakComboType::GANK_LONG_RANGE];
     self.btnC2 = [self createQuickButton:@"C2" frame:CGRectMake(180, 110, 42, 42) combo:NakComboType::CLOSE_COMBAT];
     self.btnC3 = [self createQuickButton:@"C3" frame:CGRectMake(228, 110, 42, 42) combo:NakComboType::POKE_AND_RUN];
+    self.btnAA = [self createQuickButton:@"AA" frame:CGRectMake(276, 110, 42, 42) combo:NakComboType::GANK_LONG_RANGE];
+    objc_setAssociatedObject(self.btnAA, "isAttackButton", @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     [self updateQuickButtonHighlights];
 
@@ -1056,7 +1095,8 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     btn.backgroundColor = [UIColor colorWithRed:0.20 green:0.20 blue:0.30 alpha:g_Cfg.uiOpacity];
     [btn setTitle:title forState:UIControlStateNormal];
     btn.titleLabel.font = [UIFont boldSystemFontOfSize:13];
-    [btn addTarget:self action:@selector(onQuickComboTapped:) forControlEvents:UIControlEventTouchUpInside];
+    [btn addTarget:self action:@selector(onQuickComboDown:) forControlEvents:UIControlEventTouchDown];
+    [btn addTarget:self action:@selector(onQuickComboUp:) forControlEvents:(UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel)];
     objc_setAssociatedObject(btn, "comboType", @((int)combo), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [self makeDraggable:btn];
     [self.view addSubview:btn];
@@ -1084,35 +1124,49 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     [pan setTranslation:CGPointZero inView:self.view];
 }
 
-- (void)onQuickComboTapped:(UIButton *)sender {
+- (CGPoint)currentAimPoint {
+    CGPoint aimPt = CGPointMake(self.mtkView.bounds.size.width * 0.5f, self.mtkView.bounds.size.height * 0.5f);
+    std::lock_guard<std::mutex> lock(g_StateMutex);
+    for (const auto& t : g_TrackedTargets) {
+        if (t.id == g_CurrentLockedId) {
+            aimPt = CGPointMake(t.center.x, t.center.y + 42.0f);
+            break;
+        }
+    }
+    return aimPt;
+}
+
+- (void)onQuickComboDown:(UIButton *)sender {
+    if ([objc_getAssociatedObject(sender, "isAttackButton") boolValue]) {
+        TouchEngine::StartHeldAttack();
+        sender.backgroundColor = [UIColor colorWithRed:0.10 green:0.75 blue:0.35 alpha:g_Cfg.uiOpacity];
+        return;
+    }
     int comboInt = [objc_getAssociatedObject(sender, "comboType") intValue];
     g_Cfg.selectedCombo = (NakComboType)comboInt;
     [self updateQuickButtonHighlights];
-
-    CGPoint aimPt = CGPointMake(self.mtkView.bounds.size.width * 0.5f, self.mtkView.bounds.size.height * 0.5f);
-    {
-        std::lock_guard<std::mutex> lock(g_StateMutex);
-        for (const auto& t : g_TrackedTargets) {
-            if (t.id == g_CurrentLockedId) {
-                aimPt = CGPointMake(t.center.x, t.center.y + 42.0f);
-                break;
-            }
-        }
-    }
-    TouchEngine::ExecuteNakSelectedCombo(aimPt, g_Cfg.selectedCombo, true);
+    sender.backgroundColor = [UIColor colorWithRed:0.10 green:0.75 blue:0.35 alpha:g_Cfg.uiOpacity];
+    TouchEngine::StartHeldCombo([self currentAimPoint], g_Cfg.selectedCombo);
 }
 
+- (void)onQuickComboUp:(UIButton *)sender {
+    TouchEngine::StopHeldAction();
+    [self updateQuickButtonHighlights];
+}
+
+
 - (void)updateQuickButtonHighlights {
-    UIColor *normalCol = [UIColor colorWithRed:0.20 green:0.20 blue:0.30 alpha:g_Cfg.uiOpacity];
-    UIColor *activeCol = [UIColor colorWithRed:0.90 green:0.50 blue:0.10 alpha:g_Cfg.uiOpacity];
-
-    self.btnC1.backgroundColor = (g_Cfg.selectedCombo == NakComboType::GANK_LONG_RANGE) ? activeCol : normalCol;
-    self.btnC2.backgroundColor = (g_Cfg.selectedCombo == NakComboType::CLOSE_COMBAT) ? activeCol : normalCol;
-    self.btnC3.backgroundColor = (g_Cfg.selectedCombo == NakComboType::POKE_AND_RUN) ? activeCol : normalCol;
-
+    UIColor *stoppedCol = [UIColor colorWithRed:0.82 green:0.12 blue:0.16 alpha:g_Cfg.uiOpacity];
+    self.btnC1.backgroundColor = stoppedCol;
+    self.btnC2.backgroundColor = stoppedCol;
+    self.btnC3.backgroundColor = stoppedCol;
+    if (![objc_getAssociatedObject(self.btnAA, "isAttackButton") boolValue]) {
+        self.btnAA.backgroundColor = stoppedCol;
+    }
     self.btnC1.hidden = !g_Cfg.showQuickComboBtns;
     self.btnC2.hidden = !g_Cfg.showQuickComboBtns;
     self.btnC3.hidden = !g_Cfg.showQuickComboBtns;
+    self.btnAA.hidden = !g_Cfg.showQuickComboBtns;
 }
 
 - (void)onToggleBot {
@@ -1139,6 +1193,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     [self.view bringSubviewToFront:self.btnC1];
     [self.view bringSubviewToFront:self.btnC2];
     [self.view bringSubviewToFront:self.btnC3];
+    [self.view bringSubviewToFront:self.btnAA];
 }
 
 - (void)onStealthGesture {
@@ -1148,6 +1203,8 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     self.btnC1.hidden = hide || !g_Cfg.showQuickComboBtns;
     self.btnC2.hidden = hide || !g_Cfg.showQuickComboBtns;
     self.btnC3.hidden = hide || !g_Cfg.showQuickComboBtns;
+    self.btnAA.hidden = hide || !g_Cfg.showQuickComboBtns;
+    if (hide) TouchEngine::StopHeldAction();
     if (hide) {
         g_ShowImGuiMenu = false;
         g_ImGuiWindowRect = CGRectZero;
@@ -1260,6 +1317,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
                 self.btnC1.alpha = g_Cfg.uiOpacity;
                 self.btnC2.alpha = g_Cfg.uiOpacity;
                 self.btnC3.alpha = g_Cfg.uiOpacity;
+                self.btnAA.alpha = g_Cfg.uiOpacity;
             }
             ImGui::Text("An/Hien nhanh: Cham 3 ngon 2 lan");
             ImGui::Separator();
