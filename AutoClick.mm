@@ -286,7 +286,7 @@ static std::atomic<float> g_VisionMeasuredFps{0.0f};
 // ============================================================================
 namespace TouchEngine {
     static std::atomic<uint64_t> g_HoldGeneration{0};
-    static std::mt19937 rng(std::random_device{}());
+    static thread_local std::mt19937 rng(std::random_device{}());
 
     bool HoldIsActive(uint64_t token) {
         return token != 0 && g_HoldGeneration.load(std::memory_order_acquire) == token;
@@ -904,19 +904,25 @@ namespace VisionEngine {
                 target.center = observation.centerPt;
                 target.width = observation.widthPt;
                 target.targetType = TargetClassifier::TargetKind::EnemyHero;
+                bool targetIdentityChanged = false;
                 if (observation.levelOCRAttempted) {
                     if (observation.level >= 1 && observation.level <= 16 &&
                         observation.levelConfidence >= 0.45f) {
+                        targetIdentityChanged =
+                            target.level != observation.level;
                         target.level = observation.level;
                         target.levelConfidence = observation.levelConfidence;
                     } else {
                         // An attempted but failed OCR read invalidates the
                         // cached label; never keep a previous hero's level.
+                        targetIdentityChanged = target.level != 0;
                         target.level = 0;
                         target.levelConfidence = 0.0f;
                     }
                 }
-                target.hpPercent = target.consecutiveFrames > 0
+                // Do not blend a newly identified hero with the previous
+                // track's HP estimate; that can preserve a stale 20% reading.
+                target.hpPercent = (target.consecutiveFrames > 0 && !targetIdentityChanged)
                     ? (target.hpPercent * 0.65f + observation.hpPercent * 0.35f)
                     : observation.hpPercent;
                 target.detectionConfidence = observation.confidence;
