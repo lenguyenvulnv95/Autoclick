@@ -86,7 +86,7 @@ int main(int argc, const char* argv[]) {
             }
             const auto observations = HealthBarSegmenter::Detect(
                 bgra.data(), (int)width, (int)height, (int)sourceStride,
-                1.0f, 0, 0, (int)width, (int)height);
+                3.0f, 0, 0, (int)width, (int)height);
             printf("SEGMENTED_BARS %s count=%zu\\n", argv[i], observations.size());
             for (const auto& bar : observations) {
                 printf("BAR type=%d level=%d hp=%.1f levelConf=%.2f hpConf=%.2f box=%.1f,%.1f,%.1f,%.1f\\n",
