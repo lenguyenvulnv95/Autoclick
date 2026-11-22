@@ -1053,6 +1053,29 @@ namespace VisionEngine {
             runLevelOCR, cfg.standardHpWidth,
             cfg.minHpHeight, cfg.maxHpHeight, hpCalibration);
 
+        // Row votes across the scene can merge an HP strip with unrelated red effects.
+        // Retry unmatched fresh strips in isolation. Badge lookup still uses the full image.
+        for (const auto& bar : hpBars) {
+            if (bar.missedFrames != 0) continue;
+            const CGRect r = bar.barRectPt;
+            auto overlaps = [&](const HealthBarSegmenter::BarObservation& o) {
+                if (o.kind != TargetClassifier::TargetKind::EnemyHero) return false;
+                CGRect box = CGRectMake(o.left * detectorScale / scaleX, o.top * detectorScale / scaleY,
+                                        o.width * detectorScale / scaleX, o.height * detectorScale / scaleY);
+                return CGRectIntersectsRect(box, r);
+            };
+            if (std::any_of(observations.begin(), observations.end(), overlaps)) continue;
+            auto local = HealthBarSegmenter::Detect(data, texW, texH, stride, detectorScale,
+                (int)std::floor((CGRectGetMinX(r) - 2) * scaleX),
+                (int)std::floor((CGRectGetMinY(r) - 2) * scaleY),
+                (int)std::ceil((CGRectGetMaxX(r) + 2) * scaleX),
+                (int)std::ceil((CGRectGetMaxY(r) + 2) * scaleY),
+                runLevelOCR, cfg.standardHpWidth, cfg.minHpHeight, cfg.maxHpHeight, hpCalibration);
+            for (const auto& o : local) {
+                if (overlaps(o)) observations.push_back(o);
+            }
+        }
+
         // Convert the detector's isotropic point estimate with the actual
         // horizontal and vertical drawable-to-view scales independently.
         const float xCorrection = detectorScale / scaleX;
