@@ -754,7 +754,7 @@ namespace VisionEngine {
     }
 
     void RequestFullScreenScan() {
-        g_FullScreenScanFrames.store(10, std::memory_order_release);
+        g_FullScreenScanFrames.store(1, std::memory_order_release);
     }
 
     inline bool IsEnemyHpColor(uint8_t b, uint8_t g, uint8_t r) {
@@ -791,27 +791,56 @@ namespace VisionEngine {
 
         const Config cfg = GetConfigSnapshot();
         const float detectorScale = std::sqrt(scaleX * scaleY);
-        const bool fullScreenScan = g_FullScreenScanFrames.load(std::memory_order_acquire) > 0;
-        if (fullScreenScan) {
-            int remaining = g_FullScreenScanFrames.load(std::memory_order_relaxed);
-            while (remaining > 0 &&
-                   !g_FullScreenScanFrames.compare_exchange_weak(
-                       remaining, remaining - 1, std::memory_order_acq_rel)) {}
+        // HP-phu always scans the entire BGRA frame. Periodically refresh
+        // the legacy verifier across the full screen as well; in intervening
+        // frames, restrict verification to the union of HP-phu candidates.
+        // This avoids a permanent center-only blind spot without performing
+        // full-screen OCR every frame.
+        static std::atomic<uint64_t> frameSequence{0};
+        const uint64_t scanFrame = frameSequence.fetch_add(1, std::memory_order_relaxed);
+        const bool requestedFullScan =
+            g_FullScreenScanFrames.exchange(0, std::memory_order_acq_rel) > 0;
+        const bool periodicFullScan = (scanFrame % 6u) == 0u;
+        const bool fullScreenScan = requestedFullScan || periodicFullScan;
+        int rx0 = (int)(cfg.mainScanRoi[0] * texW);
+        int ry0 = (int)(cfg.mainScanRoi[1] * texH);
+        int rx1 = std::min(texW, (int)((cfg.mainScanRoi[0] + cfg.mainScanRoi[2]) * texW));
+        int ry1 = std::min(texH, (int)((cfg.mainScanRoi[1] + cfg.mainScanRoi[3]) * texH));
+        if (!fullScreenScan && !hpBars.empty()) {
+            // The HP-phu boxes are in UIKit points; convert them to BGRA pixels.
+            // Include generous margins for a detached level badge and the
+            // full HP background. A union ROI prevents missing distant bars.
+            rx0 = texW; ry0 = texH; rx1 = 0; ry1 = 0;
+            for (const auto& bar : hpBars) {
+                if (bar.missedFrames != 0) continue;
+                const CGRect r = bar.barRectPt;
+                const int x0 = (int)std::floor(CGRectGetMinX(r) * scaleX - 45.0f * scaleX);
+                const int y0 = (int)std::floor(CGRectGetMinY(r) * scaleY - 30.0f * scaleY);
+                const int x1 = (int)std::ceil(CGRectGetMaxX(r) * scaleX + 45.0f * scaleX);
+                const int y1 = (int)std::ceil(CGRectGetMaxY(r) * scaleY + 24.0f * scaleY);
+                rx0 = std::min(rx0, x0); ry0 = std::min(ry0, y0);
+                rx1 = std::max(rx1, x1); ry1 = std::max(ry1, y1);
+            }
+            if (rx1 <= rx0 || ry1 <= ry0) {
+                rx0 = (int)(cfg.mainScanRoi[0] * texW);
+                ry0 = (int)(cfg.mainScanRoi[1] * texH);
+                rx1 = (int)((cfg.mainScanRoi[0] + cfg.mainScanRoi[2]) * texW);
+                ry1 = (int)((cfg.mainScanRoi[1] + cfg.mainScanRoi[3]) * texH);
+            }
         }
-        int rx0 = fullScreenScan ? 0 : (int)(cfg.mainScanRoi[0] * texW);
-        int ry0 = fullScreenScan ? 0 : (int)(cfg.mainScanRoi[1] * texH);
-        int rx1 = fullScreenScan ? texW : std::min(texW, (int)((cfg.mainScanRoi[0] + cfg.mainScanRoi[2]) * texW));
-        int ry1 = fullScreenScan ? texH : std::min(texH, (int)((cfg.mainScanRoi[1] + cfg.mainScanRoi[3]) * texH));
+        if (fullScreenScan) { rx0 = 0; ry0 = 0; rx1 = texW; ry1 = texH; }
+        rx0 = std::max(0, std::min(texW, rx0));
+        ry0 = std::max(0, std::min(texH, ry0));
+        rx1 = std::max(0, std::min(texW, rx1));
+        ry1 = std::max(0, std::min(texH, ry1));
         if (rx1 <= rx0 || ry1 <= ry0) {
             g_IsProcessing.store(false);
             return;
         }
 
-        // Detect red hero bars and yellow tower bars separately. Only confirmed
-        // or provisional hero observations are allowed into the hero tracker.
-        static std::atomic<uint64_t> frameSequence{0};
-        const bool runLevelOCR =
-            (frameSequence.fetch_add(1, std::memory_order_relaxed) % 4u) == 0u;
+        // The legacy verifier is the only source of hero/level/HP identity.
+        // HP-phu detection alone must never authorize a combo.
+        const bool runLevelOCR = (scanFrame % 4u) == 0u;
         auto observations = HealthBarSegmenter::Detect(
             data, texW, texH, stride, detectorScale, rx0, ry0, rx1, ry1,
             runLevelOCR, cfg.standardHpWidth,
@@ -1770,7 +1799,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
             ImGui::Separator();
             if (ImGui::Button("Quet toan man hinh")) VisionEngine::RequestFullScreenScan();
             ImGui::SameLine();
-            ImGui::TextDisabled("Quet full frame trong 10 frame tiep theo.");
+            ImGui::TextDisabled("Quet full frame o frame ke tiep; tu dong quet dinh ky.");
             ImGui::EndTabItem();
         }
 
