@@ -3,6 +3,9 @@
 #import <ImageIO/ImageIO.h>
 #import <CoreGraphics/CoreGraphics.h>
 
+#include "LevelRecognizer.hpp"
+#include <vector>
+
 int main(int argc, const char* argv[]) {
     @autoreleasepool {
         if (argc < 2) {
@@ -29,6 +32,35 @@ int main(int argc, const char* argv[]) {
 
             const size_t width = CGImageGetWidth(image);
             const size_t height = CGImageGetHeight(image);
+            const size_t sourceStride = width * 4;
+            std::vector<uint8_t> bgra(sourceStride * height, 0);
+            CGColorSpaceRef sourceColorSpace = CGColorSpaceCreateDeviceRGB();
+            CGContextRef sourceContext = CGBitmapContextCreate(
+                bgra.data(), width, height, 8, sourceStride, sourceColorSpace,
+                kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst);
+            CGColorSpaceRelease(sourceColorSpace);
+            if (!sourceContext) {
+                CGImageRelease(image);
+                fprintf(stderr, "BGRA_CONTEXT_FAILED %s\\n", argv[i]);
+                ++failures;
+                continue;
+            }
+            CGContextDrawImage(sourceContext, CGRectMake(0, 0, width, height), image);
+            CGContextRelease(sourceContext);
+
+            int recognizedLevel = 0;
+            float levelConfidence = 0.0f;
+            const bool levelFound = LevelRecognizer::RecognizeLevelFromBGRA(
+                bgra.data(), (int)width, (int)height, (int)sourceStride,
+                0.0f, 0.0f, (float)width, (float)height,
+                &recognizedLevel, &levelConfidence);
+            if (!levelFound) {
+                fprintf(stderr, "LEVEL_NOT_RECOGNIZED %s\\n", argv[i]);
+                ++failures;
+            } else {
+                printf("LEVEL_RESULT %s level=%d confidence=%.3f\\n",
+                       argv[i], recognizedLevel, levelConfidence);
+            }
             const size_t scaledWidth = width * 3;
             const size_t scaledHeight = height * 3;
             CGColorSpaceRef rgb = CGColorSpaceCreateDeviceRGB();
