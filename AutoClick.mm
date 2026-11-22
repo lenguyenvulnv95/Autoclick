@@ -1037,6 +1037,20 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 
 @implementation PXOverlayController
 
+// Giữ riêng giao diện overlay/menu ở chế độ ngang.
+// Không thay đổi orientation policy của ứng dụng game chủ.
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations {
+    return UIInterfaceOrientationMaskLandscape;
+}
+
+- (UIInterfaceOrientation)preferredInterfaceOrientationForPresentation {
+    return UIInterfaceOrientationLandscapeRight;
+}
+
+- (BOOL)shouldAutorotate {
+    return YES;
+}
+
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor clearColor];
