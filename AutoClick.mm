@@ -1754,8 +1754,8 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
             }
 
             ImGui::Text("HP-phu: %d thanh HP | Frame: %llu (chưa xác thực mục tiêu)",
-                        g_HPPhuObservedBars.load(std::memory_order_acquire),
-                        (unsigned long long)g_HPPhuLastFrameId.load(std::memory_order_acquire));
+                        VisionEngine::g_HPPhuObservedBars.load(std::memory_order_acquire),
+                        (unsigned long long)VisionEngine::g_HPPhuLastFrameId.load(std::memory_order_acquire));
             ImGui::Text("Tracked targets: %d | Locked ID: %d",
                         (int)monitorTargets.size(), lockedTargetId);
             ImGui::Separator();
