@@ -14,7 +14,7 @@ inline bool ParseLevelText(const std::string& text, int* outLevel) {
     int value = 0;
     bool inDigits = false;
 
-    for (size_t i = 0; i < text.size(); ++i) {
+    for (std::size_t i = 0; i < text.size(); ++i) {
         unsigned char ch = (unsigned char)text[i];
 
         // Vision often reads the leading digit "1" as I/l/| in two-digit
@@ -22,7 +22,7 @@ inline bool ParseLevelText(const std::string& text, int* outLevel) {
         // a digit; ordinary words such as "Level" remain harmless prefixes.
         if (!inDigits && groups == 0 &&
             (ch == 'I' || ch == 'l' || ch == '|')) {
-            size_t next = i + 1;
+            std::size_t next = i + 1;
             while (next < text.size() &&
                    std::isspace((unsigned char)text[next])) ++next;
             if (next < text.size() &&
