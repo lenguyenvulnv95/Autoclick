@@ -59,7 +59,7 @@ inline Classification Classify(const CandidateFeatures& f) {
     // A clean red horizontal bar with valid geometry remains a provisional
     // hero candidate when its badge is temporarily occluded by another bar.
     // Its confidence stays below a Level-confirmed hero.
-    if (f.redCoverage >= 0.10f && f.yellowCoverage < 0.10f) {
+    if (f.levelBadgePresent && f.redCoverage >= 0.10f && f.yellowCoverage < 0.10f) {
         const float confidence = Clamp01(0.50f +
             0.18f * Clamp01(f.redCoverage / 0.35f));
         return {TargetKind::EnemyHero, confidence};
