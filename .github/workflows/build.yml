@@ -21,6 +21,11 @@ jobs:
           clang++ -std=c++17 -Wall -Wextra -Werror -I. tests/LevelRecognizerTests.cpp -o /tmp/level-recognizer-tests
           /tmp/level-recognizer-tests
 
+      - name: Test TargetClassifier
+        run: |
+          clang++ -std=c++17 -Wall -Wextra -Werror -I. tests/TargetClassifierTests.cpp -o /tmp/target-classifier-tests
+          /tmp/target-classifier-tests
+
       - name: Compile AutoClick.dylib
         run: |
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
