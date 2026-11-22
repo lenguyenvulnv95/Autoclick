@@ -156,7 +156,12 @@ inline bool HasNearbyLevelBadgeShape(const uint8_t* bgra,
                                      int x0,
                                      int y0,
                                      int cropWidth,
-                                     int cropHeight) {
+                                     int cropHeight,
+                                     float barLeft,
+                                     float barTop,
+                                     float barWidth,
+                                     float barHeight,
+                                     LevelBadgeBounds* outBounds) {
     if (!bgra || cropWidth <= 0 || cropHeight <= 0) return false;
     int minX = x0 + cropWidth, maxX = x0 - 1;
     int minY = y0 + cropHeight, maxY = y0 - 1;
@@ -179,8 +184,21 @@ inline bool HasNearbyLevelBadgeShape(const uint8_t* bgra,
     const float badgeWidth = (float)(maxX - minX + 1);
     const float badgeHeight = (float)(maxY - minY + 1);
     const float aspect = badgeWidth / std::max(1.0f, badgeHeight);
-    return badgeWidth >= 12.0f && badgeHeight >= 12.0f &&
-           aspect >= 0.55f && aspect <= 1.55f;
+    if (badgeWidth < 12.0f || badgeHeight < 12.0f ||
+        aspect < 0.55f || aspect > 1.55f ||
+        !TargetClassifier::IsLevelBadgeAdjacentToBar(
+            barLeft, barTop, barWidth, barHeight,
+            (float)minX, (float)minY, badgeWidth, badgeHeight)) {
+        return false;
+    }
+
+    if (outBounds) {
+        outBounds->left = minX;
+        outBounds->top = minY;
+        outBounds->width = (int)badgeWidth;
+        outBounds->height = (int)badgeHeight;
+    }
+    return true;
 }
 
 inline std::vector<BarObservation> Detect(const uint8_t* bgra,
@@ -382,7 +400,9 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
                     // the badge is visually adjacent but its outline is fragmented.
                     HasNearbyLevelBadgeShape(
                         bgra, width, height, stride,
-                        searchX, searchY, searchW, searchH);
+                        searchX, searchY, searchW, searchH,
+                        (float)minX, (float)bandTop,
+                        (float)baseWidth, (float)bandHeight, &badge);
 
                 int level = 0;
                 float levelConfidence = 0.0f;
