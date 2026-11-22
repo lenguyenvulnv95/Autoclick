@@ -340,16 +340,31 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
 
                 int level = 0;
                 float levelConfidence = 0.0f;
-                const int cropX = badgeAdjacent ? std::max(0, badge.left - 2) : 0;
-                const int cropY = badgeAdjacent ? std::max(0, badge.top - 2) : 0;
-                const int cropW = badgeAdjacent ? std::min(width - cropX, badge.width + 4) : 0;
-                const int cropH = badgeAdjacent ? std::min(height - cropY, badge.height + 4) : 0;
-                const bool levelFound = badgeAdjacent && performLevelOCR &&
+                const int cropPadding = 8;
+                const int cropX = badgeAdjacent ? std::max(0, badge.left - cropPadding) : 0;
+                const int cropY = badgeAdjacent ? std::max(0, badge.top - cropPadding) : 0;
+                const int cropW = badgeAdjacent
+                    ? std::min(width - cropX, badge.width + cropPadding * 2) : 0;
+                const int cropH = badgeAdjacent
+                    ? std::min(height - cropY, badge.height + cropPadding * 2) : 0;
+                bool levelFound = badgeAdjacent && performLevelOCR &&
                     cropW >= 12 && cropH >= 12 &&
                     LevelRecognizer::RecognizeLevelFromBGRA(
                         bgra, width, height, stride,
                         (float)cropX, (float)cropY, (float)cropW, (float)cropH,
                         &level, &levelConfidence);
+
+                // If the tight badge crop is too small/partially occluded, retry
+                // inside the same local search window. The adjacent badge check
+                // remains mandatory, and the parser rejects multiple number groups.
+                if (badgeAdjacent && performLevelOCR && !levelFound &&
+                    searchW >= 16 && searchH >= 16) {
+                    levelFound = LevelRecognizer::RecognizeLevelFromBGRA(
+                        bgra, width, height, stride,
+                        (float)searchX, (float)searchY,
+                        (float)searchW, (float)searchH,
+                        &level, &levelConfidence);
+                }
 
                 TargetClassifier::CandidateFeatures features;
                 features.width = (float)baseWidth;
