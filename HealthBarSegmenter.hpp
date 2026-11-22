@@ -43,161 +43,31 @@ struct LevelBadgeBounds {
     int height = 0;
 };
 
-inline bool FindLevelBadgeBounds(const uint8_t* bgra,
-                                 int width,
-                                 int height,
-                                 int stride,
-                                 int x0,
-                                 int y0,
-                                 int cropWidth,
-                                 int cropHeight,
-                                 float barLeft,
-                                 float barTop,
-                                 float barWidth,
-                                 float barHeight,
-                                 LevelBadgeBounds* outBounds) {
-    if (!bgra || !outBounds || cropWidth <= 0 || cropHeight <= 0) return false;
-
-    const int x1 = std::min(width, x0 + cropWidth);
-    const int y1 = std::min(height, y0 + cropHeight);
-    const int localWidth = x1 - std::max(0, x0);
-    const int localHeight = y1 - std::max(0, y0);
-    const int localX0 = std::max(0, x0);
-    const int localY0 = std::max(0, y0);
-    if (localWidth <= 0 || localHeight <= 0) return false;
-
-    std::vector<uint8_t> visited((size_t)localWidth * localHeight, 0);
-    std::vector<int> queue;
-    float bestScore = std::numeric_limits<float>::max();
-    bool found = false;
-
-    for (int sy = 0; sy < localHeight; ++sy) {
-        for (int sx = 0; sx < localWidth; ++sx) {
-            const size_t seed = (size_t)sy * localWidth + sx;
-            if (visited[seed]) continue;
-            const uint8_t* sp = bgra + (size_t)(localY0 + sy) * stride +
-                                (size_t)(localX0 + sx) * 4;
-            if (HealthBarDetector::ClassifyPixel(sp[0], sp[1], sp[2]) !=
-                HealthBarDetector::PixelClass::TowerHpYellow) {
-                visited[seed] = 1;
-                continue;
-            }
-
-            int minX = sx, maxX = sx, minY = sy, maxY = sy;
-            int pixelCount = 0;
-            queue.clear();
-            queue.push_back((int)seed);
-            visited[seed] = 1;
-
-            for (size_t qi = 0; qi < queue.size(); ++qi) {
-                const int index = queue[qi];
-                const int px = index % localWidth;
-                const int py = index / localWidth;
-                ++pixelCount;
-                minX = std::min(minX, px); maxX = std::max(maxX, px);
-                minY = std::min(minY, py); maxY = std::max(maxY, py);
-
-                // Bridge tiny gaps in the decorative badge border while
-                // keeping separate nearby badges as independent components.
-                for (int dy = -2; dy <= 2; ++dy) {
-                    for (int dx = -2; dx <= 2; ++dx) {
-                        if (dx == 0 && dy == 0) continue;
-                        const int nx = px + dx, ny = py + dy;
-                        if (nx < 0 || ny < 0 || nx >= localWidth || ny >= localHeight) continue;
-                        const size_t ni = (size_t)ny * localWidth + nx;
-                        if (visited[ni]) continue;
-                        const uint8_t* np = bgra + (size_t)(localY0 + ny) * stride +
-                                            (size_t)(localX0 + nx) * 4;
-                        visited[ni] = 1;
-                        if (HealthBarDetector::ClassifyPixel(np[0], np[1], np[2]) ==
-                            HealthBarDetector::PixelClass::TowerHpYellow) {
-                            queue.push_back((int)ni);
-                        }
-                    }
-                }
-            }
-
-            const int badgeWidth = maxX - minX + 1;
-            const int badgeHeight = maxY - minY + 1;
-            const float aspect = (float)badgeWidth / (float)std::max(1, badgeHeight);
-            const float density = (float)pixelCount /
-                                  (float)(badgeWidth * badgeHeight);
-            if (pixelCount < 8 || badgeWidth < 10 || badgeHeight < 10 ||
-                aspect < 0.45f || aspect > 1.80f || density < 0.03f) continue;
-
-            const float badgeLeft = (float)(localX0 + minX);
-            const float badgeTop = (float)(localY0 + minY);
-            if (!TargetClassifier::IsLevelBadgeAdjacentToBar(
-                    barLeft, barTop, barWidth, barHeight,
-                    badgeLeft, badgeTop, (float)badgeWidth, (float)badgeHeight)) continue;
-
-            const float horizontalGap = barLeft - (badgeLeft + badgeWidth);
-            const float verticalDelta = std::fabs(
-                (barTop + barHeight * 0.5f) - (badgeTop + badgeHeight * 0.5f));
-            const float score = std::fabs(horizontalGap) + verticalDelta * 0.5f;
-            if (score < bestScore) {
-                bestScore = score;
-                outBounds->left = (int)badgeLeft;
-                outBounds->top = (int)badgeTop;
-                outBounds->width = badgeWidth;
-                outBounds->height = badgeHeight;
-                found = true;
-            }
+// Locate the level glyph relative to the HP fill. XP ring color varies.
+inline bool FindLevelDigits(const uint8_t* bgra, int width, int height, int stride,
+                            int left, int top, int barHeight, LevelBadgeBounds* bounds) {
+    const float h = (float)barHeight;
+    const float cx = left - 2.1f * h;
+    const float cy = top + 0.65f * h;
+    const int x0 = std::max(0, (int)std::floor(cx - 1.2f * h));
+    const int x1 = std::min(width, (int)std::ceil(cx + 1.2f * h));
+    const int y0 = std::max(0, (int)std::floor(cy - h));
+    const int y1 = std::min(height, (int)std::ceil(cy + h));
+    int xmin = x1, xmax = -1, ymin = y1, ymax = -1, dark = 0;
+    for (int y = y0; y < y1; ++y) {
+        for (int x = x0; x < x1; ++x) {
+            const auto* pixel = bgra + (size_t)y * stride + (size_t)x * 4;
+            const int lo = std::min({pixel[0], pixel[1], pixel[2]});
+            const int hi = std::max({pixel[0], pixel[1], pixel[2]});
+            if (hi < 115) ++dark;
+            if (lo < 145 || hi - lo > 55) continue;
+            xmin = std::min(xmin, x); xmax = std::max(xmax, x);
+            ymin = std::min(ymin, y); ymax = std::max(ymax, y);
         }
     }
-    return found;
-}
-
-
-inline bool HasNearbyLevelBadgeShape(const uint8_t* bgra,
-                                     int width,
-                                     int height,
-                                     int stride,
-                                     int x0,
-                                     int y0,
-                                     int cropWidth,
-                                     int cropHeight,
-                                     float barLeft,
-                                     float barTop,
-                                     float barWidth,
-                                     float barHeight,
-                                     LevelBadgeBounds* outBounds) {
-    if (!bgra || cropWidth <= 0 || cropHeight <= 0) return false;
-    int minX = x0 + cropWidth, maxX = x0 - 1;
-    int minY = y0 + cropHeight, maxY = y0 - 1;
-    int yellowPixels = 0;
-    const int x1 = std::min(width, x0 + cropWidth);
-    const int y1 = std::min(height, y0 + cropHeight);
-    for (int y = std::max(0, y0); y < y1; ++y) {
-        const uint8_t* row = bgra + (size_t)y * stride;
-        for (int x = std::max(0, x0); x < x1; ++x) {
-            const uint8_t* p = row + (size_t)x * 4;
-            if (HealthBarDetector::ClassifyPixel(p[0], p[1], p[2]) ==
-                HealthBarDetector::PixelClass::TowerHpYellow) {
-                ++yellowPixels;
-                minX = std::min(minX, x); maxX = std::max(maxX, x);
-                minY = std::min(minY, y); maxY = std::max(maxY, y);
-            }
-        }
-    }
-    if (yellowPixels < 10 || maxX < minX || maxY < minY) return false;
-    const float badgeWidth = (float)(maxX - minX + 1);
-    const float badgeHeight = (float)(maxY - minY + 1);
-    const float aspect = badgeWidth / std::max(1.0f, badgeHeight);
-    if (badgeWidth < 12.0f || badgeHeight < 12.0f ||
-        aspect < 0.55f || aspect > 1.55f ||
-        !TargetClassifier::IsLevelBadgeAdjacentToBar(
-            barLeft, barTop, barWidth, barHeight,
-            (float)minX, (float)minY, badgeWidth, badgeHeight)) {
-        return false;
-    }
-
-    if (outBounds) {
-        outBounds->left = minX;
-        outBounds->top = minY;
-        outBounds->width = (int)badgeWidth;
-        outBounds->height = (int)badgeHeight;
-    }
+    if (xmax < xmin || ymax - ymin + 1 < 0.55f * h ||
+        dark < (x1 - x0) * (y1 - y0) * 0.45f) return false;
+    *bounds = {xmin, ymin, xmax - xmin + 1, ymax - ymin + 1};
     return true;
 }
 
@@ -231,9 +101,6 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
     const int maxBandHeight = std::max(
         minBandHeight,
         (int)std::round(std::max(minHpHeightPoints, maxHpHeightPoints) * scale));
-    const int levelSearchWidth = std::max(24, (int)std::round(76.0f * scale));
-    const int levelSearchTopPad = (int)std::round(12.0f * scale);
-    const int levelSearchHeightPad = (int)std::round(20.0f * scale);
 
     std::vector<RowStats> rows((size_t)roiY1);
     for (int y = roiY0; y < roiY1; ++y) {
@@ -401,27 +268,9 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
                 observation.hpPercent = hp.percent;
                 observation.hpConfidence = hp.confidence;
 
-                const int searchX = std::max(0, minX - levelSearchWidth);
-                const int searchY = std::max(0, bandTop - levelSearchTopPad);
-                const int searchW = minX - searchX;
-                const int searchH = std::min(height - searchY,
-                    bandHeight + levelSearchTopPad + levelSearchHeightPad);
-
                 LevelBadgeBounds badge;
-                const bool badgeAdjacent =
-                    FindLevelBadgeBounds(
-                        bgra, width, height, stride,
-                        searchX, searchY, searchW, searchH,
-                        (float)minX, (float)bandTop, (float)baseWidth, (float)bandHeight,
-                        &badge) ||
-                    // Overlapping nameplates can fragment the yellow badge border.
-                    // This bounded local-window fallback preserves detection when
-                    // the badge is visually adjacent but its outline is fragmented.
-                    HasNearbyLevelBadgeShape(
-                        bgra, width, height, stride,
-                        searchX, searchY, searchW, searchH,
-                        (float)minX, (float)bandTop,
-                        (float)baseWidth, (float)bandHeight, &badge);
+                const bool badgeAdjacent = FindLevelDigits(bgra, width, height, stride,
+                    minX, bandTop, bandHeight, &badge);
 
                 int level = 0;
                 float levelConfidence = 0.0f;
