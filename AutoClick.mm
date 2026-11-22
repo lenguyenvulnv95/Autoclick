@@ -733,6 +733,11 @@ namespace VisionEngine {
     static std::atomic<bool> g_IsProcessing{false};
     static std::atomic<double> g_LastFrameTime{0.0};
     static int g_NextTargetId = 1;
+    static std::mutex g_HPPhuEspMutex;
+    static std::vector<HPPhuBridge::Observation> g_HPPhuEspBars;
+    static double g_HPPhuEspTimestamp = 0.0;
+    static std::atomic<int> g_LegacyHeroObservations{0};
+    static std::atomic<int> g_LegacyLevelVerified{0};
     static std::atomic<int> g_HPPhuObservedBars{0};
     static std::atomic<uint64_t> g_HPPhuLastFrameId{0};
     static std::atomic<int> g_HPPhuMatchedVerified{0};
@@ -776,6 +781,11 @@ namespace VisionEngine {
         const auto hpBars = HPPhuBridge::Convert(
             hpBatch.tracks, hpBatch.widthPx, hpBatch.heightPx,
             screenPt.width, screenPt.height);
+        {
+            std::lock_guard<std::mutex> espLock(g_HPPhuEspMutex);
+            g_HPPhuEspBars = hpBars;
+            g_HPPhuEspTimestamp = hpBatch.frameId ? captureTime : 0.0;
+        }
         g_HPPhuObservedBars.store((int)hpBars.size(), std::memory_order_release);
         g_HPPhuLastFrameId.store(hpBatch.frameId, std::memory_order_release);
 
@@ -865,6 +875,14 @@ namespace VisionEngine {
             }
         }
         g_HPPhuMatchedVerified.store(corroborated, std::memory_order_release);
+
+        g_LegacyHeroObservations.store((int)detectedTargets.size(), std::memory_order_release);
+        int levelVerifiedCount = 0;
+        for (const auto& candidate : detectedTargets) {
+            if (candidate.level >= 1 && candidate.level <= 16 &&
+                candidate.levelConfidence >= 0.45f) ++levelVerifiedCount;
+        }
+        g_LegacyLevelVerified.store(levelVerifiedCount, std::memory_order_release);
 
         std::lock_guard<std::mutex> lock(g_StateMutex);
         for (auto& target : g_TrackedTargets) {
@@ -1786,6 +1804,9 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
             ImGui::Text("HP-phu: %d thanh HP | Frame: %llu (chưa xác thực mục tiêu)",
                         VisionEngine::g_HPPhuObservedBars.load(std::memory_order_acquire),
                         (unsigned long long)VisionEngine::g_HPPhuLastFrameId.load(std::memory_order_acquire));
+            ImGui::Text("Legacy hero candidates: %d | Level verified: %d",
+                        VisionEngine::g_LegacyHeroObservations.load(std::memory_order_acquire),
+                        VisionEngine::g_LegacyLevelVerified.load(std::memory_order_acquire));
             ImGui::Text("HP-phu matched verified bars: %d",
                         VisionEngine::g_HPPhuMatchedVerified.load(std::memory_order_acquire));
             const int gate = VisionEngine::g_AutoEngageGate.load(std::memory_order_acquire);
@@ -1855,9 +1876,15 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 - (void)drawInMTKView:(MTKView *)view {
     const Config cfg = GetConfigSnapshot();
     bool hasEspToDraw = false;
+    std::vector<HPPhuBridge::Observation> hpEspBars;
     if (cfg.masterEnable && cfg.drawDebugEsp) {
+        {
+            std::lock_guard<std::mutex> lock(VisionEngine::g_HPPhuEspMutex);
+            if (CACurrentMediaTime() - VisionEngine::g_HPPhuEspTimestamp <= 0.35)
+                hpEspBars = VisionEngine::g_HPPhuEspBars;
+        }
         std::lock_guard<std::mutex> lock(g_StateMutex);
-        hasEspToDraw = !g_TrackedTargets.empty();
+        hasEspToDraw = !g_TrackedTargets.empty() || !hpEspBars.empty();
     }
 
     if (!self.imguiInitialized || ImGui::GetCurrentContext() == nullptr || !self.commandQueue || !view.device) return;
@@ -1901,6 +1928,17 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 
     if (hasEspToDraw) {
         ImDrawList *bg = ImGui::GetBackgroundDrawList();
+        // Cyan: HP-phu detection only. This is NOT a verified enemy hero.
+        // Do not route these unverified rectangles to the combo selector.
+        for (const auto& bar : hpEspBars) {
+            if (bar.missedFrames != 0) continue;
+            const CGRect r = bar.barRectPt;
+            bg->AddRect(ImVec2((float)CGRectGetMinX(r), (float)CGRectGetMinY(r)),
+                        ImVec2((float)CGRectGetMaxX(r), (float)CGRectGetMaxY(r)),
+                        IM_COL32(40, 210, 255, 220), 1.0f, 0, 1.5f);
+            bg->AddText(ImVec2((float)CGRectGetMinX(r), (float)CGRectGetMinY(r) - 16.0f),
+                        IM_COL32(40, 210, 255, 220), "HP-phu");
+        }
         std::lock_guard<std::mutex> lock(g_StateMutex);
         for (const auto& t : g_TrackedTargets) {
             if (t.consecutiveFrames < cfg.minConfirmFrames) continue;
