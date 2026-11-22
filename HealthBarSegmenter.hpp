@@ -293,10 +293,11 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
                     if (match) ++columnVotes[(size_t)x];
                 }
             }
-            // Anti-aliased HP fills may not classify as red on half of every
-            // row. One-third vertical support is more tolerant while still
-            // rejecting isolated red noise.
-            const int columnVoteThreshold = std::max(1, (bandHeight + 2) / 3);
+            // Anti-aliased red HP fills may not classify on half of every
+            // row. Keep tower-yellow detection at the stricter half-row rule.
+            const int columnVoteThreshold = redMode
+                ? std::max(1, (bandHeight + 2) / 3)
+                : std::max(1, bandHeight / 2);
             std::vector<std::pair<int, int>> horizontalRuns;
             int runStart = -1;
             int runGap = 0;
