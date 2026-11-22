@@ -43,15 +43,27 @@ struct SnapshotBatch {
     int widthPx = 0;
     int heightPx = 0;
     uint64_t frameId = 0;
+    double capturedAtSeconds = 0.0;
 };
 
 class SnapshotMailbox {
 public:
     void Publish(SnapshotBatch batch) {
-        if (batch.widthPx <= 0 || batch.heightPx <= 0) return;
+        if (batch.widthPx <= 0 || batch.heightPx <= 0 ||
+            batch.frameId == 0 || !std::isfinite(batch.capturedAtSeconds) ||
+            batch.capturedAtSeconds <= 0.0) return;
         std::lock_guard<std::mutex> guard(mutex_);
         if (batch.frameId <= latest_.frameId && latest_.frameId != 0) return;
         latest_ = std::move(batch);
+    }
+    SnapshotBatch ReadFresh(double nowSeconds, double maxAgeSeconds = 0.25) const {
+        std::lock_guard<std::mutex> guard(mutex_);
+        if (!std::isfinite(nowSeconds) || !std::isfinite(maxAgeSeconds) ||
+            maxAgeSeconds < 0.0 || latest_.frameId == 0 ||
+            nowSeconds < latest_.capturedAtSeconds ||
+            nowSeconds - latest_.capturedAtSeconds > maxAgeSeconds)
+            return {};
+        return latest_;
     }
     SnapshotBatch Read() const {
         std::lock_guard<std::mutex> guard(mutex_);
@@ -97,4 +109,9 @@ inline std::vector<Observation> Convert(
     }
     return result;
 }
+// Implemented in HPPhuDetector.mm; uses Autoclick's existing Metal readback.
+void SubmitBGRA(const unsigned char* pixels, int width, int height, int stride,
+                double capturedAtSeconds);
+SnapshotBatch ReadDetectorSnapshot(double nowSeconds, double maxAgeSeconds = 0.25);
+
 } // namespace HPPhuBridge
