@@ -610,13 +610,30 @@ namespace TouchEngine {
         }
     }
 
-    void StartHeldCombo(CGPoint targetPt, NakComboType comboType) {
+    void StartHeldComboForTarget(int targetId, NakComboType comboType) {
         const uint64_t token = g_HoldGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
             while (HoldIsActive(token)) {
+                CGPoint targetPt = CGPointZero;
+                bool targetPresent = false;
+                {
+                    std::lock_guard<std::mutex> lock(g_StateMutex);
+                    for (const auto& target : g_TrackedTargets) {
+                        if (target.id == targetId && target.missingFrames <= 4 &&
+                            target.targetType == TargetClassifier::TargetKind::EnemyHero) {
+                            targetPt = CGPointMake(target.center.x, target.center.y + 42.0f);
+                            targetPresent = true;
+                            break;
+                        }
+                    }
+                }
+                // Keep attacking this exact target; never silently switch to another hero.
+                if (!targetPresent) break;
                 RunComboSequence(targetPt, comboType, token);
                 if (!WaitForHold(token, 70)) break;
             }
+            uint64_t expected = token;
+            g_HoldGeneration.compare_exchange_strong(expected, token + 1, std::memory_order_acq_rel);
         });
     }
 
@@ -659,6 +676,15 @@ namespace VisionEngine {
     static id<MTLCommandQueue> g_BlitQueue = nil;
     static id<MTLBuffer> g_ReadbackBuffer = nil;
     static NSUInteger g_ReadbackBufferSize = 0;
+    static std::atomic<int> g_FullScreenScanFrames{0};
+
+    bool ShouldCapture() {
+        return g_Cfg.masterEnable || g_FullScreenScanFrames.load(std::memory_order_acquire) > 0;
+    }
+
+    void RequestFullScreenScan() {
+        g_FullScreenScanFrames.store(10, std::memory_order_release);
+    }
 
     inline bool IsEnemyHpColor(uint8_t b, uint8_t g, uint8_t r) {
         // Tolerant HSV classification replaces the previous narrow RGB threshold.
@@ -707,10 +733,17 @@ namespace VisionEngine {
     }
 
     void ProcessFrameBuffer(const uint8_t* data, int texW, int texH, int stride, float scale) {
-        int rx0 = (int)(g_Cfg.mainScanRoi[0] * texW);
-        int ry0 = (int)(g_Cfg.mainScanRoi[1] * texH);
-        int rx1 = std::min(texW, (int)((g_Cfg.mainScanRoi[0] + g_Cfg.mainScanRoi[2]) * texW));
-        int ry1 = std::min(texH, (int)((g_Cfg.mainScanRoi[1] + g_Cfg.mainScanRoi[3]) * texH));
+        const bool fullScreenScan = g_FullScreenScanFrames.load(std::memory_order_acquire) > 0;
+        if (fullScreenScan) {
+            int remaining = g_FullScreenScanFrames.load(std::memory_order_relaxed);
+            while (remaining > 0 &&
+                   !g_FullScreenScanFrames.compare_exchange_weak(
+                       remaining, remaining - 1, std::memory_order_acq_rel)) {}
+        }
+        int rx0 = fullScreenScan ? 0 : (int)(g_Cfg.mainScanRoi[0] * texW);
+        int ry0 = fullScreenScan ? 0 : (int)(g_Cfg.mainScanRoi[1] * texH);
+        int rx1 = fullScreenScan ? texW : std::min(texW, (int)((g_Cfg.mainScanRoi[0] + g_Cfg.mainScanRoi[2]) * texW));
+        int ry1 = fullScreenScan ? texH : std::min(texH, (int)((g_Cfg.mainScanRoi[1] + g_Cfg.mainScanRoi[3]) * texH));
         if (rx1 <= rx0 || ry1 <= ry0) {
             g_IsProcessing.store(false);
             return;
@@ -886,7 +919,7 @@ namespace VisionEngine {
     }
 
     void SubmitMetalTextureAsync(id<MTLTexture> texture) {
-        if (!g_Cfg.masterEnable || !texture) return;
+        if (!ShouldCapture() || !texture) return;
         if (texture.pixelFormat != MTLPixelFormatBGRA8Unorm) return;
 
         CFTimeInterval now = CACurrentMediaTime();
@@ -1002,21 +1035,21 @@ static id<CAMetalDrawable> (*orig_nextDrawable)(id self, SEL _cmd);
 static void (*orig_setFramebufferOnly)(id self, SEL _cmd, BOOL flag);
 
 static void hooked_setFramebufferOnly(id self, SEL _cmd, BOOL flag) {
-    orig_setFramebufferOnly(self, _cmd, g_Cfg.masterEnable ? NO : flag);
+    orig_setFramebufferOnly(self, _cmd, VisionEngine::ShouldCapture() ? NO : flag);
 }
 
 static id<CAMetalDrawable> hooked_nextDrawable(id self, SEL _cmd) {
     CALayer *layer = (CALayer *)self;
     if (![layer.name isEqualToString:@"PXOverlayLayer"] && [self respondsToSelector:@selector(framebufferOnly)]) {
         BOOL fbOnly = ((BOOL (*)(id, SEL))objc_msgSend)(self, @selector(framebufferOnly));
-        BOOL desiredFbOnly = g_Cfg.masterEnable ? NO : YES;
+        BOOL desiredFbOnly = VisionEngine::ShouldCapture() ? NO : YES;
         if (fbOnly != desiredFbOnly && orig_setFramebufferOnly) {
             orig_setFramebufferOnly(self, @selector(setFramebufferOnly:), desiredFbOnly);
         }
     }
 
     id<CAMetalDrawable> drawable = orig_nextDrawable(self, _cmd);
-    if (drawable && drawable.texture && g_Cfg.masterEnable) {
+    if (drawable && drawable.texture && VisionEngine::ShouldCapture()) {
         if (![layer.name isEqualToString:@"PXOverlayLayer"]) {
             VisionEngine::SubmitMetalTextureAsync(drawable.texture);
         }
@@ -1143,7 +1176,6 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     self.btnC2 = [self createQuickButton:@"C2" frame:CGRectMake(180, 110, 42, 42) combo:NakComboType::CLOSE_COMBAT];
     self.btnC3 = [self createQuickButton:@"C3" frame:CGRectMake(228, 110, 42, 42) combo:NakComboType::POKE_AND_RUN];
     self.btnAA = [self createQuickButton:@"AA" frame:CGRectMake(276, 110, 42, 42) combo:NakComboType::GANK_LONG_RANGE];
-    objc_setAssociatedObject(self.btnAA, "isAttackButton", @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     // Ba dau moc tron vang la toa do cham/vuot skill that trong game.
     self.skillMarker1 = [self createSkillMarker:@"S1"];
@@ -1221,7 +1253,12 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     btn.backgroundColor = [UIColor colorWithRed:0.20 green:0.20 blue:0.30 alpha:g_Cfg.uiOpacity];
     [btn setTitle:title forState:UIControlStateNormal];
     btn.titleLabel.font = [UIFont boldSystemFontOfSize:13];
-    [btn addTarget:self action:@selector(onQuickComboTap:) forControlEvents:UIControlEventTouchUpInside];
+    if ([title isEqualToString:@"AA"]) {
+        [btn addTarget:self action:@selector(onQuickAAStart:) forControlEvents:UIControlEventTouchDown];
+        [btn addTarget:self action:@selector(onQuickAAStop:) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel];
+    } else {
+        [btn addTarget:self action:@selector(onQuickComboTap:) forControlEvents:UIControlEventTouchUpInside];
+    }
     objc_setAssociatedObject(btn, "comboType", @((int)combo), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [self makeDraggable:btn];
     [self.view addSubview:btn];
@@ -1287,40 +1324,53 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     return aimPt;
 }
 
-- (void)onQuickComboTap:(UIButton *)sender {
-    const BOOL wasActive = [objc_getAssociatedObject(sender, "isActive") boolValue];
-    TouchEngine::StopHeldAction();
-    for (UIButton *button in @[self.btnC1, self.btnC2, self.btnC3, self.btnAA]) {
-        objc_setAssociatedObject(button, "isActive", @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
+- (int)currentLockedTargetId {
+    std::lock_guard<std::mutex> lock(g_StateMutex);
+    return g_CurrentLockedId;
+}
 
-    if (!wasActive) {
-        objc_setAssociatedObject(sender, "isActive", @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        if ([objc_getAssociatedObject(sender, "isAttackButton") boolValue]) {
-            TouchEngine::StartHeldAttack();
-        } else {
-            CGPoint target = [self currentAimPoint];
-            if (target.x <= 0.0f && target.y <= 0.0f) {
-                objc_setAssociatedObject(sender, "isActive", @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                [self updateQuickButtonHighlights];
-                return; // Chi bat combo khi da khoa duoc muc tieu.
-            }
-            int comboInt = [objc_getAssociatedObject(sender, "comboType") intValue];
-            g_Cfg.selectedCombo = (NakComboType)comboInt;
-            TouchEngine::StartHeldCombo(target, g_Cfg.selectedCombo);
-        }
+- (void)onQuickComboTap:(UIButton *)sender {
+    int comboInt = [objc_getAssociatedObject(sender, "comboType") intValue];
+    if (comboInt < 1 || comboInt > 3) return;
+    g_Cfg.selectedCombo = (NakComboType)comboInt;
+    [self updateQuickButtonHighlights];
+}
+
+- (void)onQuickAAStart:(UIButton *)sender {
+    if (!g_Cfg.masterEnable) {
+        objc_setAssociatedObject(sender, "isActive", @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [self updateQuickButtonHighlights];
+        return;
     }
+    const int targetId = [self currentLockedTargetId];
+    if (targetId < 0) {
+        objc_setAssociatedObject(sender, "isActive", @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [self updateQuickButtonHighlights];
+        return;
+    }
+    objc_setAssociatedObject(sender, "isActive", @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    TouchEngine::StartHeldComboForTarget(targetId, g_Cfg.selectedCombo);
+    [self updateQuickButtonHighlights];
+}
+
+- (void)onQuickAAStop:(UIButton *)sender {
+    TouchEngine::StopHeldAction();
+    objc_setAssociatedObject(sender, "isActive", @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [self updateQuickButtonHighlights];
 }
 
 - (void)updateQuickButtonHighlights {
     UIColor *stoppedCol = [UIColor colorWithRed:0.82 green:0.12 blue:0.16 alpha:g_Cfg.uiOpacity];
     UIColor *activeCol = [UIColor colorWithRed:0.10 green:0.75 blue:0.35 alpha:g_Cfg.uiOpacity];
-    for (UIButton *button in @[self.btnC1, self.btnC2, self.btnC3, self.btnAA]) {
-        BOOL active = [objc_getAssociatedObject(button, "isActive") boolValue];
-        button.backgroundColor = active ? activeCol : stoppedCol;
-        button.hidden = self.floatingToggleBtn.hidden || !g_Cfg.showQuickComboBtns;
+    UIButton *comboButtons[] = { self.btnC1, self.btnC2, self.btnC3 };
+    for (int i = 0; i < 3; ++i) {
+        NakComboType type = (NakComboType)(i + 1);
+        comboButtons[i].backgroundColor = (g_Cfg.selectedCombo == type) ? activeCol : stoppedCol;
+        comboButtons[i].hidden = self.floatingToggleBtn.hidden || !g_Cfg.showQuickComboBtns;
     }
+    self.btnAA.backgroundColor =
+        [objc_getAssociatedObject(self.btnAA, "isActive") boolValue] ? activeCol : stoppedCol;
+    self.btnAA.hidden = self.floatingToggleBtn.hidden || !g_Cfg.showQuickComboBtns;
     BOOL hideMarkers = self.floatingToggleBtn.hidden || !g_ShowImGuiMenu;
     self.skillMarker1.hidden = hideMarkers;
     self.skillMarker2.hidden = hideMarkers;
@@ -1329,6 +1379,11 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 
 - (void)onToggleBot {
     g_Cfg.masterEnable = !g_Cfg.masterEnable;
+    if (!g_Cfg.masterEnable) {
+        TouchEngine::StopHeldAction();
+        objc_setAssociatedObject(self.btnAA, "isActive", @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [self updateQuickButtonHighlights];
+    }
     g_BotState.store(g_Cfg.masterEnable ? BotState::SCANNING : BotState::IDLE);
 
     [self.floatingToggleBtn setTitle:(g_Cfg.masterEnable ? @"ON" : @"OFF") forState:UIControlStateNormal];
@@ -1370,9 +1425,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     self.btnAA.hidden = hide || !g_Cfg.showQuickComboBtns;
     if (hide) {
         TouchEngine::StopHeldAction();
-        for (UIButton *button in @[self.btnC1, self.btnC2, self.btnC3, self.btnAA]) {
-            objc_setAssociatedObject(button, "isActive", @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
+        objc_setAssociatedObject(self.btnAA, "isActive", @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [self updateQuickButtonHighlights];
     }
     if (hide) {
@@ -1495,6 +1548,10 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
             ImGui::SliderInt("Tan suat quet (FPS)", &g_Cfg.captureFps, 6, 20);
             ImGui::SliderFloat("Chieu rong HP chuan (px)", &g_Cfg.standardHpWidth, 40.0f, 110.0f, "%.0f");
             ImGui::SliderInt("Temporal Confirm Frames", &g_Cfg.minConfirmFrames, 1, 6);
+            ImGui::Separator();
+            if (ImGui::Button("Quet toan man hinh")) VisionEngine::RequestFullScreenScan();
+            ImGui::SameLine();
+            ImGui::TextDisabled("Quet full frame trong 10 frame tiep theo.");
             ImGui::EndTabItem();
         }
 
