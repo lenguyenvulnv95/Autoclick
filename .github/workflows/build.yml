@@ -34,7 +34,7 @@ jobs:
       - name: Inspect reference images with Apple Vision OCR
         run: |
           unzip -q Picture.zip -d /tmp/picture-reference
-          clang++ -std=c++17 -fobjc-arc -framework Foundation -framework Vision -framework ImageIO -framework CoreGraphics tests/ReferenceImageOCR.mm -o /tmp/reference-image-ocr
+          clang++ -std=c++17 -fobjc-arc -framework Foundation -framework Vision -framework ImageIO -framework CoreGraphics tests/ReferenceImageOCR.mm LevelRecognizer.mm -o /tmp/reference-image-ocr
           find /tmp/picture-reference -type f -print0 | xargs -0 /tmp/reference-image-ocr
 
       - name: Compile AutoClick.dylib
