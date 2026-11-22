@@ -213,7 +213,8 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
                                           bool performLevelOCR = true,
                                            float standardHpWidthPoints = 68.0f,
                                            float minHpHeightPoints = 4.0f,
-                                           float maxHpHeightPoints = 14.0f) {
+                                           float maxHpHeightPoints = 14.0f,
+                                           const HealthBarDetector::EnemyHpCalibration& hpCalibration = {}) {
     std::vector<BarObservation> output;
     if (!bgra || width <= 0 || height <= 0 || stride < width * 4) return output;
 
@@ -241,7 +242,7 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
         for (int x = roiX0; x < roiX1; ++x) {
             const uint8_t* p = row + (size_t)x * 4;
             const auto kind = HealthBarDetector::ClassifyPixel(p[0], p[1], p[2]);
-            if (kind == HealthBarDetector::PixelClass::HeroHpRed) ++stats.redCount;
+            if (HealthBarDetector::IsEnemyHeroRedPixel(p[0], p[1], p[2], hpCalibration)) ++stats.redCount;
             else if (kind == HealthBarDetector::PixelClass::TowerHpYellow) ++stats.yellowCount;
         }
         rows[(size_t)y] = stats;
@@ -288,7 +289,7 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
                     const uint8_t* p = row + (size_t)x * 4;
                     const auto kind = HealthBarDetector::ClassifyPixel(p[0], p[1], p[2]);
                     const bool match = redMode
-                        ? kind == HealthBarDetector::PixelClass::HeroHpRed
+                        ? HealthBarDetector::IsEnemyHeroRedPixel(p[0], p[1], p[2], hpCalibration)
                         : kind == HealthBarDetector::PixelClass::TowerHpYellow;
                     if (match) ++columnVotes[(size_t)x];
                 }
@@ -346,7 +347,7 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
                     break;
                 }
                 const bool sameFill = redMode
-                    ? kind == HealthBarDetector::PixelClass::HeroHpRed
+                    ? HealthBarDetector::IsEnemyHeroRedPixel(p[0], p[1], p[2], hpCalibration)
                     : kind == HealthBarDetector::PixelClass::TowerHpYellow;
                 if (sameFill || IsDarkTrackPixel(p[0], p[1], p[2])) {
                     ++darkTrackPixels;
@@ -369,7 +370,11 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
                 for (int yy = 0; yy < bandHeight; ++yy) {
                     const uint8_t* p = bgra + (size_t)(bandTop + yy) * stride +
                                        (size_t)(minX + x) * 4;
-                    const auto kind = HealthBarDetector::ClassifyPixel(p[0], p[1], p[2]);
+                    auto kind = HealthBarDetector::ClassifyPixel(p[0], p[1], p[2]);
+                    if (redMode && HealthBarDetector::IsEnemyHeroRedPixel(
+                            p[0], p[1], p[2], hpCalibration)) {
+                        kind = HealthBarDetector::PixelClass::HeroHpRed;
+                    }
                     trackPixels[(size_t)yy * baseWidth + x] = kind;
                     if (kind == HealthBarDetector::PixelClass::HeroHpRed) ++redVotes;
                     if (kind == HealthBarDetector::PixelClass::TowerHpYellow) ++yellowVotes;

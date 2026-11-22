@@ -20,6 +20,14 @@ struct HSV {
     float v; // [0, 1]
 };
 
+struct EnemyHpCalibration {
+    bool enabled = false;
+    uint8_t r = 220;
+    uint8_t g = 42;
+    uint8_t b = 48;
+    float tolerance = 0.18f; // normalized RGB distance, [0, 0.50]
+};
+
 inline HSV ToHSV(uint8_t b8, uint8_t g8, uint8_t r8) {
     const float r = r8 / 255.0f;
     const float g = g8 / 255.0f;
@@ -71,6 +79,20 @@ inline PixelClass ClassifyPixel(uint8_t b, uint8_t g, uint8_t r) {
 
 inline bool IsEnemyHeroRedPixel(uint8_t b, uint8_t g, uint8_t r) {
     return ClassifyPixel(b, g, r) == PixelClass::HeroHpRed;
+}
+
+inline bool IsEnemyHeroRedPixel(uint8_t b, uint8_t g, uint8_t r,
+                                const EnemyHpCalibration& calibration) {
+    if (!calibration.enabled) return IsEnemyHeroRedPixel(b, g, r);
+
+    // Keep a weak red/chroma guard so a large tolerance cannot turn black HP
+    // separators or gray UI into fill pixels.
+    if (r < 28 || r <= g + 5 || r <= b + 3) return false;
+    const float dr = ((float)r - calibration.r) / 255.0f;
+    const float dg = ((float)g - calibration.g) / 255.0f;
+    const float db = ((float)b - calibration.b) / 255.0f;
+    const float distance = std::sqrt((dr * dr + dg * dg + db * db) / 3.0f);
+    return distance <= std::max(0.0f, std::min(0.50f, calibration.tolerance));
 }
 
 inline bool IsTowerYellowPixel(uint8_t b, uint8_t g, uint8_t r) {

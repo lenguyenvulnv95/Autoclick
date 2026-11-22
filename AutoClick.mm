@@ -91,6 +91,9 @@ struct Config {
     float minHpHeight = 4.0f;           // Chiều cao tối thiểu thanh máu theo UIKit point
     float maxHpHeight = 14.0f;          // Chiều cao tối đa thanh máu theo UIKit point
     int minConfirmFrames = 2;           // Số frame liên tiếp để xác nhận mục tiêu
+    bool customHpColorEnabled = false;  // Dùng màu HP lấy trực tiếp trong game
+    float enemyHpColor[3] = {220.0f / 255.0f, 42.0f / 255.0f, 48.0f / 255.0f};
+    float enemyHpColorTolerancePercent = 18.0f;
 
     float floatingTogglePos[2] = {0.03f, 0.28f}; // Nút ON/OFF
     float menuTogglePos[2] = {0.09f, 0.28f};    // Nút mở menu PX
@@ -191,6 +194,11 @@ namespace ConfigStorage {
             @"selectedCombo": @((int)g_Cfg.selectedCombo),
             @"standardHpWidth": @(g_Cfg.standardHpWidth),
             @"minConfirmFrames": @(g_Cfg.minConfirmFrames),
+            @"customHpColorEnabled": @(g_Cfg.customHpColorEnabled),
+            @"enemyHpColorR": @(g_Cfg.enemyHpColor[0]),
+            @"enemyHpColorG": @(g_Cfg.enemyHpColor[1]),
+            @"enemyHpColorB": @(g_Cfg.enemyHpColor[2]),
+            @"enemyHpColorTolerancePercent": @(g_Cfg.enemyHpColorTolerancePercent),
             @"posJitterPx": @(g_Cfg.posJitterPx),
             @"timeJitterMs": @(g_Cfg.timeJitterMs),
             @"delayAfterS2Ms": @(g_Cfg.delayAfterS2Ms),
@@ -235,6 +243,14 @@ namespace ConfigStorage {
         if (dict[@"selectedCombo"]) g_Cfg.selectedCombo = (NakComboType)[dict[@"selectedCombo"] intValue];
         if (dict[@"standardHpWidth"]) g_Cfg.standardHpWidth = [dict[@"standardHpWidth"] floatValue];
         if (dict[@"minConfirmFrames"]) g_Cfg.minConfirmFrames = [dict[@"minConfirmFrames"] intValue];
+        if (dict[@"customHpColorEnabled"]) g_Cfg.customHpColorEnabled = [dict[@"customHpColorEnabled"] boolValue];
+        if (dict[@"enemyHpColorR"]) g_Cfg.enemyHpColor[0] = [dict[@"enemyHpColorR"] floatValue];
+        if (dict[@"enemyHpColorG"]) g_Cfg.enemyHpColor[1] = [dict[@"enemyHpColorG"] floatValue];
+        if (dict[@"enemyHpColorB"]) g_Cfg.enemyHpColor[2] = [dict[@"enemyHpColorB"] floatValue];
+        if (dict[@"enemyHpColorTolerancePercent"]) {
+            g_Cfg.enemyHpColorTolerancePercent = std::max(0.0f, std::min(50.0f,
+                [dict[@"enemyHpColorTolerancePercent"] floatValue]));
+        }
         if (dict[@"posJitterPx"]) g_Cfg.posJitterPx = [dict[@"posJitterPx"] floatValue];
         if (dict[@"timeJitterMs"]) g_Cfg.timeJitterMs = [dict[@"timeJitterMs"] intValue];
         if (dict[@"delayAfterS2Ms"]) g_Cfg.delayAfterS2Ms = [dict[@"delayAfterS2Ms"] intValue];
@@ -857,10 +873,42 @@ namespace VisionEngine {
     static id<MTLBuffer> g_ReadbackBuffer = nil;
     static NSUInteger g_ReadbackBufferSize = 0;
     static std::atomic<int> g_FullScreenScanFrames{0};
+    static std::atomic<bool> g_ColorPickActive{false};
+    static std::atomic<bool> g_ColorPickPending{false};
+    static std::atomic<float> g_ColorPickX{0.0f};
+    static std::atomic<float> g_ColorPickY{0.0f};
+    static std::atomic<int> g_LastPickedR{-1};
+    static std::atomic<int> g_LastPickedG{-1};
+    static std::atomic<int> g_LastPickedB{-1};
 
     bool ShouldCapture() {
         return g_MasterEnable.load(std::memory_order_acquire) ||
+               g_ColorPickActive.load(std::memory_order_acquire) ||
                g_FullScreenScanFrames.load(std::memory_order_acquire) > 0;
+    }
+
+    bool IsColorPickActive() {
+        return g_ColorPickActive.load(std::memory_order_acquire);
+    }
+
+    void BeginColorPick() {
+        g_ColorPickPending.store(false, std::memory_order_release);
+        g_ColorPickActive.store(true, std::memory_order_release);
+        g_FullScreenScanFrames.store(1, std::memory_order_release);
+    }
+
+    void CancelColorPick() {
+        g_ColorPickPending.store(false, std::memory_order_release);
+        g_ColorPickActive.store(false, std::memory_order_release);
+    }
+
+    void RequestColorSample(CGPoint point, CGSize viewSize) {
+        if (!IsColorPickActive() || viewSize.width <= 0.0 || viewSize.height <= 0.0) return;
+        const float nx = std::max(0.0f, std::min(1.0f, (float)(point.x / viewSize.width)));
+        const float ny = std::max(0.0f, std::min(1.0f, (float)(point.y / viewSize.height)));
+        g_ColorPickX.store(nx, std::memory_order_relaxed);
+        g_ColorPickY.store(ny, std::memory_order_relaxed);
+        g_ColorPickPending.store(true, std::memory_order_release);
     }
 
     void RequestFullScreenScan() {
@@ -881,6 +929,44 @@ namespace VisionEngine {
             screenPt.width <= 0.0 || screenPt.height <= 0.0) {
             g_IsProcessing.store(false, std::memory_order_release);
             return;
+        }
+        if (g_ColorPickPending.exchange(false, std::memory_order_acq_rel)) {
+            const int cx = std::max(0, std::min(texW - 1,
+                (int)std::round(g_ColorPickX.load(std::memory_order_relaxed) * (texW - 1))));
+            const int cy = std::max(0, std::min(texH - 1,
+                (int)std::round(g_ColorPickY.load(std::memory_order_relaxed) * (texH - 1))));
+            int sumR = 0, sumG = 0, sumB = 0, count = 0;
+            // Average only red-dominant pixels around the tap. This avoids the
+            // black separators inside a segmented HP bar contaminating the sample.
+            for (int dy = -4; dy <= 4; ++dy) {
+                const int y = std::max(0, std::min(texH - 1, cy + dy));
+                for (int dx = -4; dx <= 4; ++dx) {
+                    const int x = std::max(0, std::min(texW - 1, cx + dx));
+                    const uint8_t* p = data + (size_t)y * stride + (size_t)x * 4;
+                    if (p[2] > p[1] + 8 && p[2] > p[0] + 6 && p[2] >= 30) {
+                        sumB += p[0]; sumG += p[1]; sumR += p[2]; ++count;
+                    }
+                }
+            }
+            if (count == 0) {
+                const uint8_t* p = data + (size_t)cy * stride + (size_t)cx * 4;
+                sumB = p[0]; sumG = p[1]; sumR = p[2]; count = 1;
+            }
+            const int pickedR = sumR / count;
+            const int pickedG = sumG / count;
+            const int pickedB = sumB / count;
+            {
+                std::lock_guard<std::recursive_mutex> configLock(g_ConfigMutex);
+                g_Cfg.enemyHpColor[0] = pickedR / 255.0f;
+                g_Cfg.enemyHpColor[1] = pickedG / 255.0f;
+                g_Cfg.enemyHpColor[2] = pickedB / 255.0f;
+                g_Cfg.customHpColorEnabled = true;
+            }
+            g_LastPickedR.store(pickedR, std::memory_order_release);
+            g_LastPickedG.store(pickedG, std::memory_order_release);
+            g_LastPickedB.store(pickedB, std::memory_order_release);
+            g_ColorPickActive.store(false, std::memory_order_release);
+            RequestFullScreenScan();
         }
         // HP-phu uses the existing Autoclick BGRA readback; no second Metal hook.
         // Publish an independent detector snapshot and consume it for diagnostics.
@@ -955,10 +1041,17 @@ namespace VisionEngine {
         const bool runLevelOCR = requestedFullScan || (scanFrame % 4u) == 0u;
         g_LastScanWasFullScreen.store(fullScreenScan, std::memory_order_release);
         g_LastScanRanOCR.store(runLevelOCR, std::memory_order_release);
+        HealthBarDetector::EnemyHpCalibration hpCalibration;
+        hpCalibration.enabled = cfg.customHpColorEnabled;
+        hpCalibration.r = (uint8_t)std::round(std::max(0.0f, std::min(1.0f, cfg.enemyHpColor[0])) * 255.0f);
+        hpCalibration.g = (uint8_t)std::round(std::max(0.0f, std::min(1.0f, cfg.enemyHpColor[1])) * 255.0f);
+        hpCalibration.b = (uint8_t)std::round(std::max(0.0f, std::min(1.0f, cfg.enemyHpColor[2])) * 255.0f);
+        hpCalibration.tolerance = std::max(0.0f, std::min(0.50f,
+            cfg.enemyHpColorTolerancePercent / 100.0f));
         auto observations = HealthBarSegmenter::Detect(
             data, texW, texH, stride, detectorScale, rx0, ry0, rx1, ry1,
             runLevelOCR, cfg.standardHpWidth,
-            cfg.minHpHeight, cfg.maxHpHeight);
+            cfg.minHpHeight, cfg.maxHpHeight, hpCalibration);
 
         // Convert the detector's isotropic point estimate with the actual
         // horizontal and vertical drawable-to-view scales independently.
@@ -1415,6 +1508,10 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
         return hitView;
     }
 
+    // Color-pick mode deliberately owns the next touch outside the menu. The
+    // tap is consumed by the overlay and never reaches the game.
+    if (VisionEngine::IsColorPickActive()) return hitView;
+
     if (!g_ShowImGuiMenu) return nil;
     if (!CGRectIsEmpty(g_ImGuiWindowRect) && CGRectContainsPoint(g_ImGuiWindowRect, point)) return hitView;
     if (ImGui::GetCurrentContext() != nullptr && ImGui::GetIO().WantCaptureMouse) return hitView;
@@ -1821,7 +1918,17 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     }
 }
 
-- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { [self updateImGuiTouch:touches phase:UITouchPhaseBegan]; }
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    if (VisionEngine::IsColorPickActive()) {
+        UITouch *touch = [touches anyObject];
+        CGPoint loc = [touch locationInView:self.mtkView];
+        if (!CGRectContainsPoint(g_ImGuiWindowRect, loc)) {
+            VisionEngine::RequestColorSample(loc, self.mtkView.bounds.size);
+            return;
+        }
+    }
+    [self updateImGuiTouch:touches phase:UITouchPhaseBegan];
+}
 - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { [self updateImGuiTouch:touches phase:UITouchPhaseMoved]; }
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { [self updateImGuiTouch:touches phase:UITouchPhaseEnded]; }
 - (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { [self updateImGuiTouch:touches phase:UITouchPhaseCancelled]; }
@@ -1924,6 +2031,37 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
             }
             ImGui::SliderFloat("Chieu rong HP chuan (point)", &g_Cfg.standardHpWidth, 40.0f, 110.0f, "%.0f");
             ImGui::SliderInt("Temporal Confirm Frames", &g_Cfg.minConfirmFrames, 1, 6);
+            ImGui::Separator();
+            ImGui::Checkbox("Dung mau HP da lay", &g_Cfg.customHpColorEnabled);
+            ImGui::ColorButton("Mau HP", ImVec4(g_Cfg.enemyHpColor[0],
+                g_Cfg.enemyHpColor[1], g_Cfg.enemyHpColor[2], 1.0f),
+                ImGuiColorEditFlags_NoTooltip, ImVec2(36.0f, 20.0f));
+            ImGui::SameLine();
+            ImGui::Text("RGB %d, %d, %d",
+                (int)std::round(g_Cfg.enemyHpColor[0] * 255.0f),
+                (int)std::round(g_Cfg.enemyHpColor[1] * 255.0f),
+                (int)std::round(g_Cfg.enemyHpColor[2] * 255.0f));
+            ImGui::SliderFloat("Dung sai mau HP", &g_Cfg.enemyHpColorTolerancePercent,
+                               0.0f, 50.0f, "%.0f%%");
+            if (!VisionEngine::IsColorPickActive()) {
+                if (ImGui::Button("Lay mau HP tren man hinh")) {
+                    TouchEngine::StopAllActions();
+                    VisionEngine::BeginColorPick();
+                }
+            } else {
+                ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f),
+                                   "Cham vao PHAN DO cua thanh HP dich");
+                ImGui::SameLine();
+                if (ImGui::Button("Huy lay mau")) VisionEngine::CancelColorPick();
+            }
+            const int lastR = VisionEngine::g_LastPickedR.load(std::memory_order_acquire);
+            if (lastR >= 0) {
+                ImGui::TextDisabled("Mau vua lay: RGB %d, %d, %d",
+                    lastR,
+                    VisionEngine::g_LastPickedG.load(std::memory_order_acquire),
+                    VisionEngine::g_LastPickedB.load(std::memory_order_acquire));
+            }
+            ImGui::TextDisabled("0%% = khop chinh xac; tang dan neu HP thap bi bo sot.");
             ImGui::Separator();
             if (ImGui::Button("Quet toan man hinh")) VisionEngine::RequestFullScreenScan();
             ImGui::SameLine();
