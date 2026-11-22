@@ -18,6 +18,7 @@
 #include <algorithm>
 
 #include "HealthBarDetector.hpp"
+#include "HealthBarSegmenter.hpp"
 
 #include "imgui.h"
 #include "imgui_impl_metal.h"
@@ -192,13 +193,18 @@ namespace ConfigStorage {
 // CẤU TRÚC THỊ GIÁC MÁY TÍNH & TRACKER
 // ============================================================================
 struct TrackedTarget {
-    int id;
-    CGPoint center;
-    CGPoint velocity;
-    float width;
-    int consecutiveFrames;
-    int missingFrames;
-    int queueSlot;
+    int id = -1;
+    CGPoint center = CGPointZero;
+    CGPoint velocity = CGPointZero;
+    float width = 0.0f;
+    int consecutiveFrames = 0;
+    int missingFrames = 0;
+    int queueSlot = -1;
+    TargetClassifier::TargetKind targetType = TargetClassifier::TargetKind::Unknown;
+    int level = 0;
+    float levelConfidence = 0.0f;
+    float hpPercent = 0.0f;
+    float detectionConfidence = 0.0f;
 };
 
 enum class BotState {
@@ -626,162 +632,119 @@ namespace VisionEngine {
     }
 
     void ProcessFrameBuffer(const uint8_t* data, int texW, int texH, int stride, float scale) {
-        if (!HasMinimapEnemyPresence(data, texW, texH, stride)) {
-            std::lock_guard<std::mutex> lock(g_StateMutex);
-            g_TrackedTargets.clear();
-            g_CurrentLockedId = -1;
-            if (g_BotState.load() != BotState::EXECUTING) {
-                g_BotState.store(BotState::SCANNING);
-            }
-            g_IsProcessing.store(false);
-            return;
-        }
-
         int rx0 = (int)(g_Cfg.mainScanRoi[0] * texW);
         int ry0 = (int)(g_Cfg.mainScanRoi[1] * texH);
         int rx1 = std::min(texW, (int)((g_Cfg.mainScanRoi[0] + g_Cfg.mainScanRoi[2]) * texW));
         int ry1 = std::min(texH, (int)((g_Cfg.mainScanRoi[1] + g_Cfg.mainScanRoi[3]) * texH));
-
-        int roiW = rx1 - rx0;
-        int roiH = ry1 - ry0;
-        if (roiW <= 0 || roiH <= 0) {
+        if (rx1 <= rx0 || ry1 <= ry0) {
             g_IsProcessing.store(false);
             return;
         }
 
-        std::vector<uint8_t> mask(roiW * roiH, 0);
-        for (int y = 0; y < roiH; ++y) {
-            const uint8_t* row = data + (ry0 + y) * stride;
-            for (int x = 0; x < roiW; ++x) {
-                int px = (rx0 + x) * 4;
-                if (IsEnemyHpColor(row[px], row[px + 1], row[px + 2])) {
-                    mask[y * roiW + x] = 1;
-                }
-            }
-        }
+        // Detect red hero bars and yellow tower bars separately. Only confirmed
+        // or provisional hero observations are allowed into the hero tracker.
+        const auto observations = HealthBarSegmenter::Detect(
+            data, texW, texH, stride, scale, rx0, ry0, rx1, ry1);
 
-        struct RawBlob {
+        struct RawTarget {
             CGPoint centerPt;
             float widthPt;
+            int level;
+            float levelConfidence;
+            float hpPercent;
+            float confidence;
         };
-        std::vector<RawBlob> detectedBlobs;
-        std::vector<uint8_t> visited(roiW * roiH, 0);
-        std::vector<std::pair<int, int>> stack;
-        stack.reserve(256);
+        std::vector<RawTarget> detectedTargets;
+        detectedTargets.reserve(observations.size());
 
-        float scaledStdWidth = g_Cfg.standardHpWidth * scale;
-        float scaledMinH = g_Cfg.minHpHeight * scale;
-        float scaledMaxH = g_Cfg.maxHpHeight * scale;
+        for (const auto& observation : observations) {
+            if (observation.kind != TargetClassifier::TargetKind::EnemyHero) continue;
+            if (observation.confidence < 0.50f) continue;
 
-        for (int y = 0; y < roiH; ++y) {
-            for (int x = 0; x < roiW; ++x) {
-                int idx = y * roiW + x;
-                if (mask[idx] == 1 && !visited[idx]) {
-                    int minX = x, maxX = x, minY = y, maxY = y;
-                    stack.clear();
-                    stack.push_back({x, y});
-                    visited[idx] = 1;
-
-                    while (!stack.empty()) {
-                        auto [cx, cy] = stack.back();
-                        stack.pop_back();
-                        minX = std::min(minX, cx); maxX = std::max(maxX, cx);
-                        minY = std::min(minY, cy); maxY = std::max(maxY, cy);
-
-                        const int dx[4] = {1, -1, 0, 0};
-                        const int dy[4] = {0, 0, 1, -1};
-                        for (int d = 0; d < 4; ++d) {
-                            int nx = cx + dx[d], ny = cy + dy[d];
-                            if (nx >= 0 && nx < roiW && ny >= 0 && ny < roiH) {
-                                int nIdx = ny * roiW + nx;
-                                if (mask[nIdx] == 1 && !visited[nIdx]) {
-                                    visited[nIdx] = 1;
-                                    stack.push_back({nx, ny});
-                                }
-                            }
-                        }
-                    }
-
-                    float blobW = (float)(maxX - minX + 1);
-                    float blobH = (float)(maxY - minY + 1);
-
-                    if (!HealthBarDetector::IsPlausibleBarShape(
-                            blobW, blobH,
-                            scaledStdWidth * 0.65f,
-                            scaledMinH,
-                            scaledMaxH * 2.5f)) {
-                        continue;
-                    }
-
-                    int splitCount = std::max(1, (int)std::round(blobW / scaledStdWidth));
-                    float segW = blobW / (float)splitCount;
-
-                    for (int s = 0; s < splitCount; ++s) {
-                        float segCenterX = rx0 + minX + segW * (s + 0.5f);
-                        float segCenterY = ry0 + maxY - (blobH * 0.3f);
-
-                        if (CheckContextAboveHp(data, texW, texH, stride, (int)segCenterX, ry0 + minY)) {
-                            detectedBlobs.push_back({
-                                CGPointMake(segCenterX / scale, segCenterY / scale),
-                                segW / scale
-                            });
-                        }
-                    }
-                }
-            }
+            detectedTargets.push_back({
+                CGPointMake(observation.left + observation.width * 0.5f,
+                            observation.top + observation.height * 0.5f),
+                observation.width,
+                observation.level,
+                observation.levelConfidence,
+                observation.hpPercent,
+                observation.confidence
+            });
         }
 
         std::lock_guard<std::mutex> lock(g_StateMutex);
-        for (auto& t : g_TrackedTargets) {
-            t.missingFrames++;
+        for (auto& target : g_TrackedTargets) {
+            target.missingFrames++;
         }
 
-        for (const auto& blob : detectedBlobs) {
+        std::vector<bool> matched(g_TrackedTargets.size(), false);
+        for (const auto& observation : detectedTargets) {
             int bestIdx = -1;
             float bestDist = 48.0f;
 
             for (size_t i = 0; i < g_TrackedTargets.size(); ++i) {
-                CGPoint pred = CGPointMake(
-                    g_TrackedTargets[i].center.x + g_TrackedTargets[i].velocity.x,
-                    g_TrackedTargets[i].center.y + g_TrackedTargets[i].velocity.y
+                if (matched[i]) continue;
+                const auto& tracked = g_TrackedTargets[i];
+                CGPoint predicted = CGPointMake(
+                    tracked.center.x + tracked.velocity.x,
+                    tracked.center.y + tracked.velocity.y
                 );
-                float dist = std::hypot(blob.centerPt.x - pred.x, blob.centerPt.y - pred.y);
-                if (dist < bestDist) {
-                    bestDist = dist;
+                const float distance = std::hypot(
+                    observation.centerPt.x - predicted.x,
+                    observation.centerPt.y - predicted.y);
+                if (distance < bestDist) {
+                    bestDist = distance;
                     bestIdx = (int)i;
                 }
             }
 
-            if (bestIdx != -1) {
-                auto& target = g_TrackedTargets[bestIdx];
-                target.velocity = CGPointMake(blob.centerPt.x - target.center.x, blob.centerPt.y - target.center.y);
-                target.center = blob.centerPt;
-                target.width = blob.widthPt;
+            if (bestIdx >= 0) {
+                auto& target = g_TrackedTargets[(size_t)bestIdx];
+                matched[(size_t)bestIdx] = true;
+                target.velocity = CGPointMake(
+                    observation.centerPt.x - target.center.x,
+                    observation.centerPt.y - target.center.y);
+                target.center = observation.centerPt;
+                target.width = observation.widthPt;
+                target.targetType = TargetClassifier::TargetKind::EnemyHero;
+                if (observation.level > 0 && observation.levelConfidence >= 0.45f) {
+                    target.level = observation.level;
+                    target.levelConfidence = observation.levelConfidence;
+                }
+                target.hpPercent = target.consecutiveFrames > 0
+                    ? (target.hpPercent * 0.65f + observation.hpPercent * 0.35f)
+                    : observation.hpPercent;
+                target.detectionConfidence = observation.confidence;
                 target.consecutiveFrames++;
                 target.missingFrames = 0;
             } else {
-                TrackedTarget newT;
-                newT.id = g_NextTargetId++;
-                newT.center = blob.centerPt;
-                newT.velocity = CGPointZero;
-                newT.width = blob.widthPt;
-                newT.consecutiveFrames = 1;
-                newT.missingFrames = 0;
-                newT.queueSlot = -1;
-                g_TrackedTargets.push_back(newT);
+                TrackedTarget newTarget;
+                newTarget.id = g_NextTargetId++;
+                newTarget.center = observation.centerPt;
+                newTarget.velocity = CGPointZero;
+                newTarget.width = observation.widthPt;
+                newTarget.consecutiveFrames = 1;
+                newTarget.missingFrames = 0;
+                newTarget.queueSlot = -1;
+                newTarget.targetType = TargetClassifier::TargetKind::EnemyHero;
+                newTarget.level = observation.level;
+                newTarget.levelConfidence = observation.levelConfidence;
+                newTarget.hpPercent = observation.hpPercent;
+                newTarget.detectionConfidence = observation.confidence;
+                g_TrackedTargets.push_back(newTarget);
+                matched.push_back(true);
             }
         }
 
         g_TrackedTargets.erase(
-            std::remove_if(g_TrackedTargets.begin(), g_TrackedTargets.end(), [](const TrackedTarget& t) {
-                if (t.missingFrames > 4) {
-                    if (t.id == g_CurrentLockedId) {
-                        g_CurrentLockedId = -1;
+            std::remove_if(g_TrackedTargets.begin(), g_TrackedTargets.end(),
+                [](const TrackedTarget& target) {
+                    if (target.missingFrames > 4) {
+                        if (target.id == g_CurrentLockedId) g_CurrentLockedId = -1;
+                        return true;
                     }
-                    return true;
-                }
-                return false;
-            }),
+                    return false;
+                }),
             g_TrackedTargets.end()
         );
 
@@ -789,32 +752,37 @@ namespace VisionEngine {
         CGPoint screenCenter = CGPointMake(screenPt.width * 0.5f, screenPt.height * 0.5f);
         TrackedTarget* chosenTarget = nullptr;
 
-        for (auto& t : g_TrackedTargets) {
-            if (t.id == g_CurrentLockedId && t.consecutiveFrames >= g_Cfg.minConfirmFrames) {
-                chosenTarget = &t;
+        for (auto& target : g_TrackedTargets) {
+            if (target.id == g_CurrentLockedId &&
+                target.consecutiveFrames >= g_Cfg.minConfirmFrames) {
+                chosenTarget = &target;
                 break;
             }
         }
 
         if (!chosenTarget) {
-            float minCenterDist = 1e9f;
-            for (auto& t : g_TrackedTargets) {
-                if (t.consecutiveFrames < g_Cfg.minConfirmFrames) continue;
-                float d = std::hypot(t.center.x - screenCenter.x, t.center.y - screenCenter.y);
-                if (d < minCenterDist) {
-                    minCenterDist = d;
-                    chosenTarget = &t;
+            float minCenterDistance = 1e9f;
+            for (auto& target : g_TrackedTargets) {
+                if (target.consecutiveFrames < g_Cfg.minConfirmFrames) continue;
+                if (target.targetType != TargetClassifier::TargetKind::EnemyHero) continue;
+                const float distance = std::hypot(
+                    target.center.x - screenCenter.x,
+                    target.center.y - screenCenter.y);
+                if (distance < minCenterDistance) {
+                    minCenterDistance = distance;
+                    chosenTarget = &target;
                 }
             }
-            if (chosenTarget) {
-                g_CurrentLockedId = chosenTarget->id;
-            }
+            if (chosenTarget) g_CurrentLockedId = chosenTarget->id;
         }
 
-        if (chosenTarget && g_Cfg.autoEngage && g_BotState.load() != BotState::EXECUTING) {
+        if (chosenTarget && g_Cfg.autoEngage &&
+            g_BotState.load() != BotState::EXECUTING) {
             g_BotState.store(BotState::LOCKED);
-            CGPoint bodyAimPt = CGPointMake(chosenTarget->center.x, chosenTarget->center.y + 42.0f);
-            TouchEngine::ExecuteNakSelectedCombo(bodyAimPt, g_Cfg.selectedCombo, false);
+            CGPoint bodyAimPoint = CGPointMake(
+                chosenTarget->center.x, chosenTarget->center.y + 42.0f);
+            TouchEngine::ExecuteNakSelectedCombo(
+                bodyAimPoint, g_Cfg.selectedCombo, false);
         }
 
         g_IsProcessing.store(false);
