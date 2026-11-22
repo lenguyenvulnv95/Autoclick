@@ -42,7 +42,8 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
                                           int roiX0 = 0,
                                           int roiY0 = 0,
                                           int roiX1 = -1,
-                                          int roiY1 = -1) {
+                                          int roiY1 = -1,
+                                          bool performLevelOCR = true) {
     std::vector<BarObservation> output;
     if (!bgra || width <= 0 || height <= 0 || stride < width * 4) return output;
 
@@ -202,7 +203,7 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
 
                 int level = 0;
                 float levelConfidence = 0.0f;
-                const bool levelFound = cropW >= 16 &&
+                const bool levelFound = performLevelOCR && cropW >= 16 &&
                     LevelRecognizer::RecognizeLevelFromBGRA(
                         bgra, width, height, stride,
                         (float)cropX, (float)cropY, (float)cropW, (float)cropH,
