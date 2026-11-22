@@ -7,6 +7,7 @@
 
 #include "LevelRecognizer.hpp"
 #include "HealthBarDetector.hpp"
+#include "HealthBarSegmenter.hpp"
 #include <vector>
 
 int main(int argc, const char* argv[]) {
@@ -81,6 +82,16 @@ int main(int argc, const char* argv[]) {
             } else {
                 printf("LEVEL_RESULT %s level=%d confidence=%.3f\\n",
                        argv[i], recognizedLevel, levelConfidence);
+            }
+            const auto observations = HealthBarSegmenter::Detect(
+                bgra.data(), (int)width, (int)height, (int)sourceStride,
+                1.0f, 0, 0, (int)width, (int)height);
+            printf("SEGMENTED_BARS %s count=%zu\\n", argv[i], observations.size());
+            for (const auto& bar : observations) {
+                printf("BAR type=%d level=%d hp=%.1f levelConf=%.2f hpConf=%.2f box=%.1f,%.1f,%.1f,%.1f\\n",
+                       (int)bar.kind, bar.level, bar.hpPercent,
+                       bar.levelConfidence, bar.hpConfidence,
+                       bar.left, bar.top, bar.width, bar.height);
             }
             const size_t scaledWidth = width * 3;
             const size_t scaledHeight = height * 3;
