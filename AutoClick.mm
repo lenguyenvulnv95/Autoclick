@@ -643,7 +643,7 @@ namespace TouchEngine {
                 break;
 
             case NakComboType::CLOSE_COMBAT:
-                // C2: S1 -> AA -> S3 -> S2 -> AA -> S1
+                // C2: S1 -> AA -> S3 -> S2 -> S1 -> AA
                 if (!active()) return;
                 SwipeSkillToward(cfg.skill1Pos, targetPt, 50, token);
                 if (!delay(ApplyDelayJitter(cfg.delayAfterS1_1Ms))) return;
@@ -653,9 +653,9 @@ namespace TouchEngine {
                 if (!delay(ApplyDelayJitter(cfg.delayAfterS3Ms))) return;
                 SwipeSkillS2OppositeToward(cfg.skill2Pos, targetPt, 55, token);
                 if (!delay(ApplyDelayJitter(cfg.delayAfterS2Ms))) return;
-                TapAt(cfg.attackPos, 28, token);
+                SwipeSkillToward(cfg.skill1Pos, targetPt, 50, token);
                 if (!delay(90)) return;
-                if (active()) SwipeSkillToward(cfg.skill1Pos, targetPt, 50, token);
+                if (active()) TapAt(cfg.attackPos, 28, token);
                 break;
 
             case NakComboType::POKE_AND_RUN:
