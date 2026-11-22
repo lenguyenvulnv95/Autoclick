@@ -1063,12 +1063,32 @@ namespace VisionEngine {
 
 // ============================================================================
 static void (*orig_commandBufferCommit)(id, SEL) = nullptr;
+static void (*orig_commandBufferPresentDrawable)(id, SEL, id) = nullptr;
+static char g_PresentedDrawableAssociationKey;
+
+static void hooked_commandBufferPresentDrawable(id self, SEL _cmd, id drawable) {
+    if (drawable) {
+        objc_setAssociatedObject(self, &g_PresentedDrawableAssociationKey,
+                                 drawable, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (orig_commandBufferPresentDrawable) {
+        orig_commandBufferPresentDrawable(self, _cmd, drawable);
+    }
+}
 
 static void hooked_commandBufferCommit(id self, SEL _cmd) {
-    SEL presentedDrawableSel = sel_registerName("presentedDrawable");
-    if (VisionEngine::ShouldCapture() && [self respondsToSelector:presentedDrawableSel]) {
-        id<CAMetalDrawable> drawable =
-            ((id (*)(id, SEL))objc_msgSend)(self, presentedDrawableSel);
+    if (VisionEngine::ShouldCapture()) {
+        id drawableObject = objc_getAssociatedObject(
+            self, &g_PresentedDrawableAssociationKey);
+        if (!drawableObject) {
+            SEL presentedDrawableSel = sel_registerName("presentedDrawable");
+            if ([self respondsToSelector:presentedDrawableSel]) {
+                drawableObject = ((id (*)(id, SEL))objc_msgSend)(
+                    self, presentedDrawableSel);
+            }
+        }
+
+        id<CAMetalDrawable> drawable = (id<CAMetalDrawable>)drawableObject;
         CAMetalLayer *layer = drawable.layer;
         if (drawable.texture && layer && ![layer.name isEqualToString:@"PXOverlayLayer"]) {
             VisionEngine::SubmitMetalTextureAsync(drawable.texture,
@@ -1086,13 +1106,27 @@ static void InstallCommandBufferCommitHook(id<MTLDevice> device) {
         if (!probe) return;
 
         Class commandBufferClass = object_getClass(probe);
-        Method commitMethod = class_getInstanceMethod(commandBufferClass, @selector(commit));
-        if (!commandBufferClass || !commitMethod) return;
+        if (!commandBufferClass) return;
 
+        Method presentMethod = class_getInstanceMethod(
+            commandBufferClass, @selector(presentDrawable:));
+        if (presentMethod) {
+            orig_commandBufferPresentDrawable =
+                (void (*)(id, SEL, id))method_getImplementation(presentMethod);
+            const char *presentTypes = method_getTypeEncoding(presentMethod);
+            if (!class_addMethod(commandBufferClass, @selector(presentDrawable:),
+                                 (IMP)hooked_commandBufferPresentDrawable, presentTypes)) {
+                method_setImplementation(presentMethod,
+                                         (IMP)hooked_commandBufferPresentDrawable);
+            }
+        }
+
+        Method commitMethod = class_getInstanceMethod(commandBufferClass, @selector(commit));
+        if (!commitMethod) return;
         orig_commandBufferCommit = (void (*)(id, SEL))method_getImplementation(commitMethod);
-        const char *types = method_getTypeEncoding(commitMethod);
+        const char *commitTypes = method_getTypeEncoding(commitMethod);
         if (!class_addMethod(commandBufferClass, @selector(commit),
-                             (IMP)hooked_commandBufferCommit, types)) {
+                             (IMP)hooked_commandBufferCommit, commitTypes)) {
             method_setImplementation(commitMethod, (IMP)hooked_commandBufferCommit);
         }
     });
