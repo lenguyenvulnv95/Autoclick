@@ -995,8 +995,15 @@ namespace VisionEngine {
             return;
         }
 
-        const NSUInteger bytesPerRow = (NSUInteger)w * 4;
-        if ((NSUInteger)h > NSUIntegerMax / bytesPerRow) {
+        const NSUInteger rawBytesPerRow = (NSUInteger)w * 4;
+        if (rawBytesPerRow > NSUIntegerMax - 255) {
+            releaseProcessing();
+            return;
+        }
+        // Metal texture-to-buffer blits require a suitably aligned row pitch
+        // on supported GPU families. Keep the CPU stride identical to it.
+        const NSUInteger bytesPerRow = (rawBytesPerRow + 255u) & ~(NSUInteger)255u;
+        if (bytesPerRow == 0 || (NSUInteger)h > NSUIntegerMax / bytesPerRow) {
             releaseProcessing();
             return;
         }
