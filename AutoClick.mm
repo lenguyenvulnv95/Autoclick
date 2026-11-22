@@ -83,7 +83,6 @@ struct Config {
     bool autoEngage = false;            // Tự động kích hoạt combo khi khóa mục tiêu
     bool targetQueueEnable = false;     // Khóa tuần tự 5 mục tiêu A -> E
     bool drawDebugEsp = true;           // Vẽ khung nhận diện thanh máu & mục tiêu lock
-    bool stealthMode = true;            // Ẩn khỏi quay màn hình / chụp ảnh
     bool showQuickComboBtns = true;     // Hiển thị cụm 3 nút C1, C2, C3 trên màn hình
     float uiOpacity = 0.85f;            // Độ mờ nút điều khiển nổi
 
@@ -691,17 +690,6 @@ namespace TouchEngine {
         });
     }
 
-    void StartHeldAttack() {
-        const uint64_t token = g_HoldGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-            while (HoldIsActive(token)) {
-                const Config cfg = GetConfigSnapshot();
-                TapAt(cfg.attackPos, 28);
-                if (!WaitForHold(token, 75)) break;
-            }
-        });
-    }
-
     void StopHeldAction() {
         g_HoldGeneration.fetch_add(1, std::memory_order_acq_rel);
     }
@@ -746,46 +734,6 @@ namespace VisionEngine {
         // This is only a red-HP candidate filter; shape and Level validation
         // remain separate stages before a candidate can be confirmed as a hero.
         return HealthBarDetector::IsEnemyHeroRedPixel(b, g, r);
-    }
-
-    bool CheckContextAboveHp(const uint8_t* bgra, int width, int height, int stride, int centerX, int topY) {
-        int y0 = std::max(0, topY - 16);
-        int y1 = std::max(0, topY - 3);
-        int x0 = std::max(0, centerX - 22);
-        int x1 = std::min(width - 1, centerX + 22);
-
-        int contextHits = 0;
-        for (int y = y0; y <= y1; ++y) {
-            const uint8_t* row = bgra + y * stride;
-            for (int x = x0; x <= x1; ++x) {
-                uint8_t b = row[x * 4 + 0];
-                uint8_t g = row[x * 4 + 1];
-                uint8_t r = row[x * 4 + 2];
-                bool isText = (r > 195 && g > 195 && b > 195);
-                bool isBorder = (r < 48 && g < 48 && b < 48);
-                if (isText || isBorder) contextHits++;
-            }
-        }
-        return contextHits >= 12;
-    }
-
-    bool HasMinimapEnemyPresence(const uint8_t* bgra, int width, int height, int stride) {
-        const Config cfg = GetConfigSnapshot();
-        int x0 = (int)(cfg.minimapRoi[0] * width);
-        int y0 = (int)(cfg.minimapRoi[1] * height);
-        int x1 = std::min(width, (int)((cfg.minimapRoi[0] + cfg.minimapRoi[2]) * width));
-        int y1 = std::min(height, (int)((cfg.minimapRoi[1] + cfg.minimapRoi[3]) * height));
-
-        int redDots = 0;
-        for (int y = y0; y < y1; y += 2) {
-            const uint8_t* row = bgra + y * stride;
-            for (int x = x0; x < x1; x += 2) {
-                if (IsEnemyHpColor(row[x * 4], row[x * 4 + 1], row[x * 4 + 2])) {
-                    if (++redDots >= 5) return true;
-                }
-            }
-        }
-        return false;
     }
 
     void ProcessFrameBuffer(const uint8_t* data, int texW, int texH, int stride,
