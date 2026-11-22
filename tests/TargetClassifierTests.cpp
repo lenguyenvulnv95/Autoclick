@@ -65,6 +65,12 @@ int main() {
     result = TargetClassifier::Classify(badShape);
     assert(result.kind == TargetKind::Unknown);
 
-    std::cout << "TargetClassifier tests: PASS (9 scenarios)\\n";
+    assert(TargetClassifier::IsLevelBadgeAdjacentToBar(
+        100.0f, 50.0f, 120.0f, 12.0f, 78.0f, 46.0f, 18.0f, 18.0f));
+    assert(!TargetClassifier::IsLevelBadgeAdjacentToBar(
+        100.0f, 50.0f, 120.0f, 12.0f, 20.0f, 46.0f, 18.0f, 18.0f));
+    assert(!TargetClassifier::IsLevelBadgeAdjacentToBar(
+        100.0f, 50.0f, 120.0f, 12.0f, 78.0f, 100.0f, 18.0f, 18.0f));
+    std::cout << "TargetClassifier tests: PASS (12 scenarios)\\n";
     return 0;
 }
