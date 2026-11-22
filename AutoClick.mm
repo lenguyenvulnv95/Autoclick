@@ -20,6 +20,7 @@
 #include "HealthBarDetector.hpp"
 #include "HealthBarSegmenter.hpp"
 #include "TargetSelector.hpp"
+#include "HPPhuBridge.h"
 
 #include "imgui.h"
 #include "imgui_impl_metal.h"
@@ -732,6 +733,8 @@ namespace VisionEngine {
     static std::atomic<bool> g_IsProcessing{false};
     static std::atomic<double> g_LastFrameTime{0.0};
     static int g_NextTargetId = 1;
+    static std::atomic<int> g_HPPhuObservedBars{0};
+    static std::atomic<uint64_t> g_HPPhuLastFrameId{0};
     static id<MTLBuffer> g_ReadbackBuffer = nil;
     static NSUInteger g_ReadbackBufferSize = 0;
     static std::atomic<int> g_FullScreenScanFrames{0};
@@ -760,6 +763,18 @@ namespace VisionEngine {
             g_IsProcessing.store(false, std::memory_order_release);
             return;
         }
+        // HP-phu uses the existing Autoclick BGRA readback; no second Metal hook.
+        // Publish an independent detector snapshot and consume it for diagnostics.
+        // Do NOT feed unverified bars to TargetSelector or Auto-Engage.
+        const double captureTime = CACurrentMediaTime();
+        HPPhuBridge::SubmitBGRA(data, texW, texH, stride, captureTime);
+        const auto hpBatch = HPPhuBridge::ReadDetectorSnapshot(captureTime);
+        const auto hpBars = HPPhuBridge::Convert(
+            hpBatch.tracks, hpBatch.widthPx, hpBatch.heightPx,
+            screenPt.width, screenPt.height);
+        g_HPPhuObservedBars.store((int)hpBars.size(), std::memory_order_release);
+        g_HPPhuLastFrameId.store(hpBatch.frameId, std::memory_order_release);
+
         const Config cfg = GetConfigSnapshot();
         const float detectorScale = std::sqrt(scaleX * scaleY);
         const bool fullScreenScan = g_FullScreenScanFrames.load(std::memory_order_acquire) > 0;
@@ -1738,6 +1753,9 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
                 lockedTargetId = g_CurrentLockedId;
             }
 
+            ImGui::Text("HP-phu: %d thanh HP | Frame: %llu (chưa xác thực mục tiêu)",
+                        g_HPPhuObservedBars.load(std::memory_order_acquire),
+                        (unsigned long long)g_HPPhuLastFrameId.load(std::memory_order_acquire));
             ImGui::Text("Tracked targets: %d | Locked ID: %d",
                         (int)monitorTargets.size(), lockedTargetId);
             ImGui::Separator();
