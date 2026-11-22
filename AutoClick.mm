@@ -1319,11 +1319,12 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     for (UIButton *button in @[self.btnC1, self.btnC2, self.btnC3, self.btnAA]) {
         BOOL active = [objc_getAssociatedObject(button, "isActive") boolValue];
         button.backgroundColor = active ? activeCol : stoppedCol;
-        button.hidden = !g_Cfg.showQuickComboBtns;
+        button.hidden = self.floatingToggleBtn.hidden || !g_Cfg.showQuickComboBtns;
     }
-    self.skillMarker1.hidden = !g_ShowImGuiMenu;
-    self.skillMarker2.hidden = !g_ShowImGuiMenu;
-    self.skillMarker3.hidden = !g_ShowImGuiMenu;
+    BOOL hideMarkers = self.floatingToggleBtn.hidden || !g_ShowImGuiMenu;
+    self.skillMarker1.hidden = hideMarkers;
+    self.skillMarker2.hidden = hideMarkers;
+    self.skillMarker3.hidden = hideMarkers;
 }
 
 - (void)onToggleBot {
@@ -1462,8 +1463,10 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 
             ImGui::Separator();
             if (ImGui::Button("Test Chay Combo Da Chon")) {
-                CGPoint centerPt = CGPointMake(self.mtkView.bounds.size.width * 0.5f, self.mtkView.bounds.size.height * 0.5f);
-                TouchEngine::ExecuteNakSelectedCombo(centerPt, g_Cfg.selectedCombo, true);
+                CGPoint target = [self currentAimPoint];
+                if (target.x > 0.0f || target.y > 0.0f) {
+                    TouchEngine::ExecuteNakSelectedCombo(target, g_Cfg.selectedCombo, true);
+                }
             }
 
             ImGui::Separator();
