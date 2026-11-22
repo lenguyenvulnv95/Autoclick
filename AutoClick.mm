@@ -87,7 +87,7 @@ struct Config {
     float uiOpacity = 0.85f;            // Độ mờ nút điều khiển nổi
 
     int captureFps = 60;                // Mục tiêu tối đa; FPS thực tế phụ thuộc tốc độ xử lý Vision
-    float standardHpWidth = 68.0f;      // Chiều rộng chuẩn 1 thanh máu tướng (px)
+    float standardHpWidth = 68.0f;      // Chiều rộng chuẩn thanh máu theo UIKit point
     float minHpHeight = 4.0f;           // Chiều cao tối thiểu thanh máu (px)
     float maxHpHeight = 14.0f;          // Chiều cao tối đa thanh máu (px)
     int minConfirmFrames = 2;           // Số frame liên tiếp để xác nhận mục tiêu
@@ -768,7 +768,8 @@ namespace VisionEngine {
         const bool runLevelOCR =
             (frameSequence.fetch_add(1, std::memory_order_relaxed) % 4u) == 0u;
         auto observations = HealthBarSegmenter::Detect(
-            data, texW, texH, stride, detectorScale, rx0, ry0, rx1, ry1, runLevelOCR);
+            data, texW, texH, stride, detectorScale, rx0, ry0, rx1, ry1,
+            runLevelOCR, cfg.standardHpWidth);
 
         // Convert the detector's isotropic point estimate with the actual
         // horizontal and vertical drawable-to-view scales independently.
@@ -1640,7 +1641,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
             if (ImGui::SliderInt("Tan suat quet (FPS)", &g_Cfg.captureFps, 6, 60)) {
                 g_CaptureFps.store(g_Cfg.captureFps, std::memory_order_release);
             }
-            ImGui::SliderFloat("Chieu rong HP chuan (px)", &g_Cfg.standardHpWidth, 40.0f, 110.0f, "%.0f");
+            ImGui::SliderFloat("Chieu rong HP chuan (point)", &g_Cfg.standardHpWidth, 40.0f, 110.0f, "%.0f");
             ImGui::SliderInt("Temporal Confirm Frames", &g_Cfg.minConfirmFrames, 1, 6);
             ImGui::Separator();
             if (ImGui::Button("Quet toan man hinh")) VisionEngine::RequestFullScreenScan();
