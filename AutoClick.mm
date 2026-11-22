@@ -101,6 +101,7 @@ struct Config {
     float quickC3Pos[2] = {0.24f, 0.14f};
     float quickAAPos[2] = {0.30f, 0.14f};
     float quickButtonSize = 42.0f;
+    float quickAAButtonSize = 42.0f;
     float skill1Pos[2] = {0.78f, 0.82f}; // Chiêu 1 (2 lần)
     float skill2Pos[2] = {0.84f, 0.65f}; // Chiêu 2 (lướt ngược)
     float skill3Pos[2] = {0.92f, 0.52f}; // Chiêu 3 (Ulti)
@@ -160,6 +161,7 @@ namespace ConfigStorage {
             @"quickC3X": @(g_Cfg.quickC3Pos[0]), @"quickC3Y": @(g_Cfg.quickC3Pos[1]),
             @"quickAAX": @(g_Cfg.quickAAPos[0]), @"quickAAY": @(g_Cfg.quickAAPos[1]),
             @"quickButtonSize": @(g_Cfg.quickButtonSize),
+            @"quickAAButtonSize": @(g_Cfg.quickAAButtonSize),
             @"skill1X": @(g_Cfg.skill1Pos[0]), @"skill1Y": @(g_Cfg.skill1Pos[1]),
             @"skill2X": @(g_Cfg.skill2Pos[0]), @"skill2Y": @(g_Cfg.skill2Pos[1]),
             @"skill3X": @(g_Cfg.skill3Pos[0]), @"skill3Y": @(g_Cfg.skill3Pos[1]),
@@ -207,6 +209,7 @@ namespace ConfigStorage {
         if (dict[@"quickAAX"]) g_Cfg.quickAAPos[0] = [dict[@"quickAAX"] floatValue];
         if (dict[@"quickAAY"]) g_Cfg.quickAAPos[1] = [dict[@"quickAAY"] floatValue];
         if (dict[@"quickButtonSize"]) g_Cfg.quickButtonSize = [dict[@"quickButtonSize"] floatValue];
+        if (dict[@"quickAAButtonSize"]) g_Cfg.quickAAButtonSize = [dict[@"quickAAButtonSize"] floatValue];
         if (dict[@"skill1X"]) g_Cfg.skill1Pos[0] = [dict[@"skill1X"] floatValue];
         if (dict[@"skill1Y"]) g_Cfg.skill1Pos[1] = [dict[@"skill1Y"] floatValue];
         if (dict[@"skill2X"]) g_Cfg.skill2Pos[0] = [dict[@"skill2X"] floatValue];
@@ -613,19 +616,26 @@ namespace TouchEngine {
     void StartHeldComboForTarget(int targetId, NakComboType comboType) {
         const uint64_t token = g_HoldGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            int activeTargetId = targetId;
             while (HoldIsActive(token)) {
                 CGPoint targetPt = CGPointZero;
                 bool targetPresent = false;
                 {
                     std::lock_guard<std::mutex> lock(g_StateMutex);
+                    if (activeTargetId < 0) activeTargetId = g_CurrentLockedId;
                     for (const auto& target : g_TrackedTargets) {
-                        if (target.id == targetId && target.missingFrames <= 4 &&
+                        if (activeTargetId >= 0 && target.id == activeTargetId &&
+                            target.missingFrames <= 4 &&
                             target.targetType == TargetClassifier::TargetKind::EnemyHero) {
                             targetPt = CGPointMake(target.center.x, target.center.y + 42.0f);
                             targetPresent = true;
                             break;
                         }
                     }
+                }
+                if (!targetPresent && activeTargetId < 0) {
+                    if (!WaitForHold(token, 50)) break;
+                    continue;
                 }
                 // Keep attacking this exact target; never silently switch to another hero.
                 if (!targetPresent) break;
@@ -1206,14 +1216,15 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     self.btnC3.center = CGPointMake(g_Cfg.quickC3Pos[0] * size.width, g_Cfg.quickC3Pos[1] * size.height);
     self.btnAA.center = CGPointMake(g_Cfg.quickAAPos[0] * size.width, g_Cfg.quickAAPos[1] * size.height);
     const CGFloat quickD = MAX(30.0f, MIN(72.0f, g_Cfg.quickButtonSize));
+    const CGFloat aaD = MAX(30.0f, MIN(88.0f, g_Cfg.quickAAButtonSize));
     self.btnC1.bounds = CGRectMake(0, 0, quickD, quickD);
     self.btnC2.bounds = CGRectMake(0, 0, quickD, quickD);
     self.btnC3.bounds = CGRectMake(0, 0, quickD, quickD);
-    self.btnAA.bounds = CGRectMake(0, 0, quickD, quickD);
+    self.btnAA.bounds = CGRectMake(0, 0, aaD, aaD);
     self.btnC1.layer.cornerRadius = quickD * 0.5f;
     self.btnC2.layer.cornerRadius = quickD * 0.5f;
     self.btnC3.layer.cornerRadius = quickD * 0.5f;
-    self.btnAA.layer.cornerRadius = quickD * 0.5f;
+    self.btnAA.layer.cornerRadius = aaD * 0.5f;
     self.skillMarker1.center = CGPointMake(g_Cfg.skill1Pos[0] * size.width, g_Cfg.skill1Pos[1] * size.height);
     self.skillMarker2.center = CGPointMake(g_Cfg.skill2Pos[0] * size.width, g_Cfg.skill2Pos[1] * size.height);
     self.skillMarker3.center = CGPointMake(g_Cfg.skill3Pos[0] * size.width, g_Cfg.skill3Pos[1] * size.height);
@@ -1343,12 +1354,8 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
         return;
     }
     const int targetId = [self currentLockedTargetId];
-    if (targetId < 0) {
-        objc_setAssociatedObject(sender, "isActive", @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [self updateQuickButtonHighlights];
-        return;
-    }
     objc_setAssociatedObject(sender, "isActive", @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // If Vision is still confirming the target, the held-AA worker waits for its lock.
     TouchEngine::StartHeldComboForTarget(targetId, g_Cfg.selectedCombo);
     [self updateQuickButtonHighlights];
 }
@@ -1526,7 +1533,10 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
             ImGui::SliderFloat("Touch Jitter (px)", &g_Cfg.posJitterPx, 0.0f, 12.0f, "%.1f");
             ImGui::SliderInt("Delay Jitter (ms)", &g_Cfg.timeJitterMs, 0, 45);
             ImGui::Separator();
-            if (ImGui::SliderFloat("Kich thuoc nut C1/C2/C3/AA", &g_Cfg.quickButtonSize, 30.0f, 72.0f, "%.0f px")) {
+            if (ImGui::SliderFloat("Kich thuoc nut C1/C2/C3", &g_Cfg.quickButtonSize, 30.0f, 72.0f, "%.0f px")) {
+                [self syncControlButtonFramesFromConfig];
+            }
+            if (ImGui::SliderFloat("Kich thuoc nut AA (rieng)", &g_Cfg.quickAAButtonSize, 30.0f, 88.0f, "%.0f px")) {
                 [self syncControlButtonFramesFromConfig];
             }
             ImGui::EndTabItem();
