@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #include "HealthBarDetector.hpp"
@@ -95,8 +96,10 @@ inline bool FindLevelBadgeBounds(const uint8_t* bgra,
                 minX = std::min(minX, px); maxX = std::max(maxX, px);
                 minY = std::min(minY, py); maxY = std::max(maxY, py);
 
-                for (int dy = -1; dy <= 1; ++dy) {
-                    for (int dx = -1; dx <= 1; ++dx) {
+                // Bridge tiny gaps in the decorative badge border while
+                // keeping separate nearby badges as independent components.
+                for (int dy = -2; dy <= 2; ++dy) {
+                    for (int dx = -2; dx <= 2; ++dx) {
                         if (dx == 0 && dy == 0) continue;
                         const int nx = px + dx, ny = py + dy;
                         if (nx < 0 || ny < 0 || nx >= localWidth || ny >= localHeight) continue;
@@ -118,8 +121,8 @@ inline bool FindLevelBadgeBounds(const uint8_t* bgra,
             const float aspect = (float)badgeWidth / (float)std::max(1, badgeHeight);
             const float density = (float)pixelCount /
                                   (float)(badgeWidth * badgeHeight);
-            if (pixelCount < 10 || badgeWidth < 12 || badgeHeight < 12 ||
-                aspect < 0.55f || aspect > 1.55f || density < 0.08f) continue;
+            if (pixelCount < 8 || badgeWidth < 10 || badgeHeight < 10 ||
+                aspect < 0.45f || aspect > 1.80f || density < 0.03f) continue;
 
             const float badgeLeft = (float)(localX0 + minX);
             const float badgeTop = (float)(localY0 + minY);

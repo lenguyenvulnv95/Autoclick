@@ -40,12 +40,12 @@ inline bool IsLevelBadgeAdjacentToBar(float barLeft, float barTop,
 
     // The level box is expected immediately to the left of the HP bar.
     const float horizontalGap = barLeft - (badgeLeft + badgeWidth);
-    const float maxGap = std::max(8.0f, barHeight * 1.5f);
-    if (horizontalGap < -2.5f || horizontalGap > maxGap) return false;
+    const float maxGap = std::max(14.0f, barHeight * 2.5f);
+    if (horizontalGap < -3.0f || horizontalGap > maxGap) return false;
 
     const float barCenterY = barTop + barHeight * 0.5f;
     const float badgeCenterY = badgeTop + badgeHeight * 0.5f;
-    const float verticalTolerance = std::max(barHeight * 2.5f, badgeHeight * 0.9f);
+    const float verticalTolerance = std::max(barHeight * 3.5f, badgeHeight * 1.5f);
     return std::fabs(barCenterY - badgeCenterY) <= verticalTolerance;
 }
 
