@@ -73,9 +73,9 @@ extern "C" {
 // CẤU HÌNH HỆ THỐNG & PRESET CHO NAK
 // ============================================================================
 enum class NakComboType {
-    GANK_LONG_RANGE = 1,    // C1: Gank / bắt lẻ từ xa
-    CLOSE_COMBAT    = 2,    // C2: Địch ở gần
-    POKE_AND_RUN    = 3     // C3: Cấu rỉa / ra vào nhanh (rút lui ngược hướng S1 lần 2)
+    GANK_LONG_RANGE = 1,    // C1: Gank tầm xa — S2, S1 hướng mục tiêu hai lần, S3, AA
+    CLOSE_COMBAT    = 2,    // C2: Cận chiến — S1, AA, S3, S2, S1, AA
+    POKE_AND_RUN    = 3     // C3: Cấu rỉa rồi rút lui — S1 lần hai ngược hướng mục tiêu
 };
 
 struct Config {
@@ -629,7 +629,7 @@ namespace TouchEngine {
 
         switch (comboType) {
             case NakComboType::GANK_LONG_RANGE:
-                // C1: S2 -> S1 -> S1 -> S3 -> AA
+                // C1 — Gank tầm xa: S2 ngược hướng mục tiêu -> S1 hướng mục tiêu -> S1 hướng mục tiêu -> S3 -> AA
                 if (!active()) return;
                 SwipeSkillS2OppositeToward(cfg.skill2Pos, targetPt, 55, token);
                 if (!delay(ApplyDelayJitter(cfg.delayAfterS2Ms))) return;
@@ -643,7 +643,7 @@ namespace TouchEngine {
                 break;
 
             case NakComboType::CLOSE_COMBAT:
-                // C2: S1 -> AA -> S3 -> S2 -> S1 -> AA
+                // C2 — Cận chiến: S1 hướng mục tiêu -> AA -> S3 -> S2 ngược hướng mục tiêu -> S1 hướng mục tiêu -> AA
                 if (!active()) return;
                 SwipeSkillToward(cfg.skill1Pos, targetPt, 50, token);
                 if (!delay(ApplyDelayJitter(cfg.delayAfterS1_1Ms))) return;
@@ -659,7 +659,7 @@ namespace TouchEngine {
                 break;
 
             case NakComboType::POKE_AND_RUN:
-                // C3: S2 -> S1 -> AA -> S1 retreat
+                // C3 — Cấu rỉa rồi rút lui: S2 -> S1 hướng mục tiêu -> AA -> S1 ngược hướng mục tiêu
                 if (!active()) return;
                 SwipeSkillS2OppositeToward(cfg.skill2Pos, targetPt, 55, token);
                 if (!delay(ApplyDelayJitter(cfg.delayAfterS2Ms))) return;
@@ -1638,32 +1638,32 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     g_ImGuiWindowRect = CGRectMake(pos.x, pos.y, size.x, size.y);
 
     if (ImGui::BeginTabBar("PXNakTabs")) {
-        if (ImGui::BeginTabItem("Combo & Nut Nhanh")) {
+        if (ImGui::BeginTabItem("Combo và nút nhanh")) {
             ImGui::Checkbox("Auto-Engage (Tu dong khi khoa muc tieu)", &g_Cfg.autoEngage);
             if (ImGui::Checkbox("Hien thi cum 3 nut C1 C2 C3 tren man hinh", &g_Cfg.showQuickComboBtns)) {
                 [self updateQuickButtonHighlights];
             }
             ImGui::Separator();
-            ImGui::Text("Chon Loai Combo & Mo Ta Chi Tiet:");
+            ImGui::Text("Chọn combo và xem trình tự kỹ năng:");
 
             int comboVal = (int)g_Cfg.selectedCombo;
-            if (ImGui::RadioButton("C1: Gank tu xa", &comboVal, 1)) {
+            if (ImGui::RadioButton("C1: Gank tầm xa", &comboVal, 1)) {
                 g_Cfg.selectedCombo = NakComboType::GANK_LONG_RANGE;
                 [self updateQuickButtonHighlights];
             }
-            ImGui::SameLine(); ImGui::TextDisabled("(S2 -> S1 -> S1 -> S3 -> AA)");
+            ImGui::SameLine(); ImGui::TextDisabled("(S2 ngược hướng -> S1 hướng mục tiêu -> S1 hướng mục tiêu -> S3 -> AA)");
 
-            if (ImGui::RadioButton("C2: Dich o gan", &comboVal, 2)) {
+            if (ImGui::RadioButton("C2: Cận chiến", &comboVal, 2)) {
                 g_Cfg.selectedCombo = NakComboType::CLOSE_COMBAT;
                 [self updateQuickButtonHighlights];
             }
-            ImGui::SameLine(); ImGui::TextDisabled("(S1 -> AA -> S3 -> S2 -> AA -> S1)");
+            ImGui::SameLine(); ImGui::TextDisabled("(S1 hướng mục tiêu -> AA -> S3 -> S2 ngược hướng -> S1 hướng mục tiêu -> AA)");
 
-            if (ImGui::RadioButton("C3: Cau ria / Rut lui", &comboVal, 3)) {
+            if (ImGui::RadioButton("C3: Cấu rỉa rồi rút lui", &comboVal, 3)) {
                 g_Cfg.selectedCombo = NakComboType::POKE_AND_RUN;
                 [self updateQuickButtonHighlights];
             }
-            ImGui::SameLine(); ImGui::TextDisabled("(S2 -> S1 -> AA -> S1 lui)");
+            ImGui::SameLine(); ImGui::TextDisabled("(S2 -> S1 hướng mục tiêu -> AA -> S1 ngược hướng mục tiêu để rút lui)");
 
             ImGui::Separator();
             if (ImGui::Button("Test Chay Combo Da Chon")) {
