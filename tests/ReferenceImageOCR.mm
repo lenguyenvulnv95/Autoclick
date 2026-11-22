@@ -4,6 +4,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 
 #include <algorithm>
+#include <string>
 
 #include "LevelRecognizer.hpp"
 #include "HealthBarDetector.hpp"
@@ -92,6 +93,36 @@ int main(int argc, const char* argv[]) {
                        (int)bar.kind, bar.level, bar.hpPercent,
                        bar.levelConfidence, bar.hpConfidence,
                        bar.left, bar.top, bar.width, bar.height);
+            }
+
+            std::vector<HealthBarSegmenter::BarObservation> heroes;
+            for (const auto& bar : observations) {
+                if (bar.kind == TargetClassifier::TargetKind::EnemyHero) heroes.push_back(bar);
+            }
+            const std::string filePath(argv[i]);
+            auto failDataset = [&](const char* reason) {
+                fprintf(stderr, "DATASET_ASSERT_FAIL %s: %s\\n", argv[i], reason);
+                ++failures;
+            };
+            if (filePath.find("IMG_4111") != std::string::npos) {
+                if (heroes.size() != 1 || heroes[0].level != 1 || heroes[0].hpPercent < 90.0f)
+                    failDataset("expected one level-1 hero at near-full HP");
+            } else if (filePath.find("IMG_4112") != std::string::npos) {
+                if (heroes.size() != 1 || heroes[0].level != 1 ||
+                    heroes[0].hpPercent < 35.0f || heroes[0].hpPercent > 55.0f)
+                    failDataset("expected one level-1 hero in the labeled half-health range");
+            } else if (filePath.find("IMG_4113") != std::string::npos) {
+                if (heroes.size() != 1 || heroes[0].level != 2 ||
+                    heroes[0].hpPercent < 10.0f || heroes[0].hpPercent > 30.0f)
+                    failDataset("expected one level-2 hero in the labeled low-health range");
+            } else if (filePath.find("IMG_4115") != std::string::npos) {
+                if (heroes.size() != 1 || heroes[0].level != 15 || heroes[0].hpPercent < 90.0f)
+                    failDataset("expected one level-15 high-HP hero; shield must be excluded");
+            } else if (filePath.find("IMG_4114") != std::string::npos) {
+                int confirmedLevels = 0;
+                for (const auto& hero : heroes) if (hero.level >= 1 && hero.level <= 16) ++confirmedLevels;
+                if (heroes.size() != 4 || confirmedLevels < 3)
+                    failDataset("expected four overlapping hero bars, at least three with readable levels");
             }
             const size_t scaledWidth = width * 3;
             const size_t scaledHeight = height * 3;
