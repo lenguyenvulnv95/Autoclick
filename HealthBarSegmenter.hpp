@@ -131,8 +131,8 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
             int darkTrackPixels = 0;
             bool shieldBoundary = false;
             const int maxTrackSearch = std::max(
-                (int)std::round(fillWidth * 2.5f),
-                (int)std::round(120.0f * scale));
+                (int)std::round(fillWidth * 6.0f),
+                (int)std::round(300.0f * scale));
             const int searchEnd = std::min(roiX1, maxX + 1 + maxTrackSearch);
 
             for (int x = maxX + 1; x < searchEnd; ++x) {
