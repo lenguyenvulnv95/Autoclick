@@ -87,8 +87,8 @@ struct Config {
 
     int captureFps = 60;                // Mục tiêu tối đa; FPS thực tế phụ thuộc tốc độ xử lý Vision
     float standardHpWidth = 68.0f;      // Chiều rộng chuẩn thanh máu theo UIKit point
-    float minHpHeight = 4.0f;           // Chiều cao tối thiểu thanh máu (px)
-    float maxHpHeight = 14.0f;          // Chiều cao tối đa thanh máu (px)
+    float minHpHeight = 4.0f;           // Chiều cao tối thiểu thanh máu theo UIKit point
+    float maxHpHeight = 14.0f;          // Chiều cao tối đa thanh máu theo UIKit point
     int minConfirmFrames = 2;           // Số frame liên tiếp để xác nhận mục tiêu
 
     float floatingTogglePos[2] = {0.03f, 0.28f}; // Nút ON/OFF
