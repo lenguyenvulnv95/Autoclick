@@ -132,21 +132,29 @@ static Config GetConfigSnapshot() {
 }
 static std::atomic<float> g_ScreenPointWidth{0.0f};
 static std::atomic<float> g_ScreenPointHeight{0.0f};
+static std::atomic<uint64_t> g_ScreenMetricsVersion{0};
 static std::atomic<uint64_t> g_ImGuiFrameCounter{0};
 static std::atomic<uint64_t> g_ImGuiMousePressFrame{0};
 static std::atomic<bool> g_ImGuiMouseReleasePending{false};
 static bool g_ShowImGuiMenu = false;
 
 static CGSize CachedScreenPointSize() {
-    return CGSizeMake(
-        (CGFloat)g_ScreenPointWidth.load(std::memory_order_acquire),
-        (CGFloat)g_ScreenPointHeight.load(std::memory_order_acquire));
+    for (;;) {
+        const uint64_t before = g_ScreenMetricsVersion.load(std::memory_order_acquire);
+        if (before & 1u) continue;
+        const float width = g_ScreenPointWidth.load(std::memory_order_relaxed);
+        const float height = g_ScreenPointHeight.load(std::memory_order_relaxed);
+        const uint64_t after = g_ScreenMetricsVersion.load(std::memory_order_acquire);
+        if (before == after) return CGSizeMake((CGFloat)width, (CGFloat)height);
+    }
 }
 
 static void UpdateCachedScreenPointSize(CGSize size) {
     if (size.width <= 0.0 || size.height <= 0.0) return;
-    g_ScreenPointWidth.store((float)size.width, std::memory_order_release);
-    g_ScreenPointHeight.store((float)size.height, std::memory_order_release);
+    g_ScreenMetricsVersion.fetch_add(1, std::memory_order_acq_rel); // odd: write in progress
+    g_ScreenPointWidth.store((float)size.width, std::memory_order_relaxed);
+    g_ScreenPointHeight.store((float)size.height, std::memory_order_relaxed);
+    g_ScreenMetricsVersion.fetch_add(1, std::memory_order_release); // even: consistent snapshot
 }
 
 // ============================================================================
