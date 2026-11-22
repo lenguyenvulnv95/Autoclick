@@ -13,12 +13,14 @@
 
 int main(int argc, const char* argv[]) {
     @autoreleasepool {
-        if (argc < 2) {
-            fprintf(stderr, "Usage: ReferenceImageOCR image...\n");
+        const bool legacySegmentation = argc >= 3 && std::string(argv[1]) == "--legacy-segmentation";
+        const int firstImage = legacySegmentation ? 2 : 1;
+        if (argc <= firstImage) {
+            fprintf(stderr, "Usage: ReferenceImageOCR [--legacy-segmentation] image...\n");
             return 2;
         }
         int failures = 0;
-        for (int i = 1; i < argc; ++i) {
+        for (int i = firstImage; i < argc; ++i) {
             NSString* path = [NSString stringWithUTF8String:argv[i]];
             NSURL* url = [NSURL fileURLWithPath:path];
             CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)url, nullptr);
@@ -84,6 +86,7 @@ int main(int argc, const char* argv[]) {
                 printf("LEVEL_RESULT %s level=%d confidence=%.3f\\n",
                        argv[i], recognizedLevel, levelConfidence);
             }
+            if (legacySegmentation) {
             const auto observations = HealthBarSegmenter::Detect(
                 bgra.data(), (int)width, (int)height, (int)sourceStride,
                 3.0f, 0, 0, (int)width, (int)height);
@@ -124,6 +127,7 @@ int main(int argc, const char* argv[]) {
                 if (heroes.size() != 4 || confirmedLevels < 3)
                     failDataset("expected four overlapping hero bars, at least three with readable levels");
             }
+            } // Legacy segmentation assertions are independent of level OCR.
             const size_t scaledWidth = width * 3;
             const size_t scaledHeight = height * 3;
             CGColorSpaceRef rgb = CGColorSpaceCreateDeviceRGB();
