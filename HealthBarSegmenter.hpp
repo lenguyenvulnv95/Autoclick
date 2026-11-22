@@ -137,6 +137,9 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
             }
 
             const int bandHeight = bandBottom - bandTop + 1;
+            // Exclude status/item graphics attached to the very top edge of
+            // cropped reference frames; the live main-game ROI starts below HUD.
+            if (bandTop < (int)std::round(12.0f * scale)) continue;
             if (bandHeight < minBandHeight || bandHeight > maxBandHeight) continue;
 
             int minX = roiX1, maxX = -1;
