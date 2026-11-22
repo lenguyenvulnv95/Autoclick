@@ -210,7 +210,8 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
                                           int roiY0 = 0,
                                           int roiX1 = -1,
                                           int roiY1 = -1,
-                                          bool performLevelOCR = true) {
+                                          bool performLevelOCR = true,
+                                           float standardHpWidthPoints = 68.0f) {
     std::vector<BarObservation> output;
     if (!bgra || width <= 0 || height <= 0 || stride < width * 4) return output;
 
@@ -318,9 +319,13 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
             const int sampleY = (bandTop + bandBottom) / 2;
             int darkTrackPixels = 0;
             bool shieldBoundary = false;
-            const int maxTrackSearch = std::max(
-                (int)std::round(fillWidth * 6.0f),
-                (int)std::round(300.0f * scale));
+            // Bound the dark-track scan to a plausible health-bar width.
+            // Without this limit, a dark game background contiguous with the
+            // unfilled bar can be mistaken for HP track and drive HP% too low.
+            const float configuredWidth = std::max(40.0f, standardHpWidthPoints);
+            const int maxPlausibleBarWidth =
+                std::max(fillWidth, (int)std::round(configuredWidth * 1.5f * scale));
+            const int maxTrackSearch = std::max(0, maxPlausibleBarWidth - fillWidth);
             const int searchEnd = std::min(roiX1, maxX + 1 + maxTrackSearch);
 
             for (int x = maxX + 1; x < searchEnd; ++x) {
