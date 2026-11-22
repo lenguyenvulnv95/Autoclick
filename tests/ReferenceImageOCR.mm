@@ -3,7 +3,10 @@
 #import <ImageIO/ImageIO.h>
 #import <CoreGraphics/CoreGraphics.h>
 
+#include <algorithm>
+
 #include "LevelRecognizer.hpp"
+#include "HealthBarDetector.hpp"
 #include <vector>
 
 int main(int argc, const char* argv[]) {
@@ -47,6 +50,24 @@ int main(int argc, const char* argv[]) {
             }
             CGContextDrawImage(sourceContext, CGRectMake(0, 0, width, height), image);
             CGContextRelease(sourceContext);
+
+            int redMinX = (int)width, redMinY = (int)height, redMaxX = -1, redMaxY = -1;
+            int yellowMinX = (int)width, yellowMinY = (int)height, yellowMaxX = -1, yellowMaxY = -1;
+            for (int py = 0; py < (int)height; ++py) {
+                for (int px = 0; px < (int)width; ++px) {
+                    const uint8_t* pixel = bgra.data() + (size_t)py * sourceStride + (size_t)px * 4;
+                    const auto kind = HealthBarDetector::ClassifyPixel(pixel[0], pixel[1], pixel[2]);
+                    if (kind == HealthBarDetector::PixelClass::HeroHpRed) {
+                        redMinX = std::min(redMinX, px); redMaxX = std::max(redMaxX, px);
+                        redMinY = std::min(redMinY, py); redMaxY = std::max(redMaxY, py);
+                    } else if (kind == HealthBarDetector::PixelClass::TowerHpYellow) {
+                        yellowMinX = std::min(yellowMinX, px); yellowMaxX = std::max(yellowMaxX, px);
+                        yellowMinY = std::min(yellowMinY, py); yellowMaxY = std::max(yellowMaxY, py);
+                    }
+                }
+            }
+            if (redMaxX >= 0) printf("RED_BOUNDS x=%d..%d y=%d..%d\\n", redMinX, redMaxX, redMinY, redMaxY);
+            if (yellowMaxX >= 0) printf("YELLOW_BOUNDS x=%d..%d y=%d..%d\\n", yellowMinX, yellowMaxX, yellowMinY, yellowMaxY);
 
             int recognizedLevel = 0;
             float levelConfidence = 0.0f;
