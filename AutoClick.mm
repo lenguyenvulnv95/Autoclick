@@ -19,6 +19,7 @@
 
 #include "HealthBarDetector.hpp"
 #include "HealthBarSegmenter.hpp"
+#include "TargetSelector.hpp"
 
 #include "imgui.h"
 #include "imgui_impl_metal.h"
@@ -753,31 +754,36 @@ namespace VisionEngine {
 
         CGSize screenPt = [UIScreen mainScreen].bounds.size;
         CGPoint screenCenter = CGPointMake(screenPt.width * 0.5f, screenPt.height * 0.5f);
-        TrackedTarget* chosenTarget = nullptr;
-
-        for (auto& target : g_TrackedTargets) {
-            if (target.id == g_CurrentLockedId &&
-                target.consecutiveFrames >= g_Cfg.minConfirmFrames) {
-                chosenTarget = &target;
-                break;
-            }
+        std::vector<TargetSelector::Candidate> selectionCandidates;
+        selectionCandidates.reserve(g_TrackedTargets.size());
+        for (const auto& target : g_TrackedTargets) {
+            TargetSelector::Candidate candidate;
+            candidate.id = target.id;
+            candidate.hpPercent = target.hpPercent;
+            candidate.confidence = target.detectionConfidence;
+            candidate.centerDistance = std::hypot(
+                target.center.x - screenCenter.x,
+                target.center.y - screenCenter.y);
+            candidate.level = target.level;
+            candidate.consecutiveFrames = target.consecutiveFrames;
+            candidate.missingFrames = target.missingFrames;
+            candidate.isEnemyHero =
+                target.targetType == TargetClassifier::TargetKind::EnemyHero;
+            selectionCandidates.push_back(candidate);
         }
 
-        if (!chosenTarget) {
-            float minCenterDistance = 1e9f;
-            for (auto& target : g_TrackedTargets) {
-                if (target.consecutiveFrames < g_Cfg.minConfirmFrames) continue;
-                if (target.targetType != TargetClassifier::TargetKind::EnemyHero) continue;
-                const float distance = std::hypot(
-                    target.center.x - screenCenter.x,
-                    target.center.y - screenCenter.y);
-                if (distance < minCenterDistance) {
-                    minCenterDistance = distance;
-                    chosenTarget = &target;
-                }
-            }
-            if (chosenTarget) g_CurrentLockedId = chosenTarget->id;
-        }
+        const int selectedIndex = TargetSelector::SelectLowestHP(
+            selectionCandidates,
+            g_Cfg.minConfirmFrames,
+            0.75f,
+            g_CurrentLockedId,
+            1.0f);
+        TrackedTarget* chosenTarget = selectedIndex >= 0
+            ? &g_TrackedTargets[(size_t)selectedIndex]
+            : nullptr;
+
+        if (chosenTarget) g_CurrentLockedId = chosenTarget->id;
+        else g_CurrentLockedId = -1;
 
         if (chosenTarget && chosenTarget->level > 0 &&
             chosenTarget->detectionConfidence >= 0.75f &&
