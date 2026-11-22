@@ -142,8 +142,7 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
             if (bandTop < (int)std::round(12.0f * scale)) continue;
             if (bandHeight < minBandHeight || bandHeight > maxBandHeight) continue;
 
-            int minX = roiX1, maxX = -1;
-            int matchingPixels = 0;
+            std::vector<int> columnVotes((size_t)roiX1, 0);
             for (int yy = bandTop; yy <= bandBottom; ++yy) {
                 const uint8_t* row = bgra + (size_t)yy * stride;
                 for (int x = roiX0; x < roiX1; ++x) {
@@ -152,15 +151,33 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
                     const bool match = redMode
                         ? kind == HealthBarDetector::PixelClass::HeroHpRed
                         : kind == HealthBarDetector::PixelClass::TowerHpYellow;
-                    if (match) {
-                        minX = std::min(minX, x);
-                        maxX = std::max(maxX, x);
-                        ++matchingPixels;
-                    }
+                    if (match) ++columnVotes[(size_t)x];
                 }
             }
+            const int columnVoteThreshold = std::max(1, bandHeight / 2);
+            std::vector<std::pair<int, int>> horizontalRuns;
+            int runStart = -1;
+            int runGap = 0;
+            for (int x = roiX0; x < roiX1; ++x) {
+                const bool activeColumn = columnVotes[(size_t)x] >= columnVoteThreshold;
+                if (activeColumn) {
+                    if (runStart < 0) runStart = x;
+                    runGap = 0;
+                } else if (runStart >= 0 && runGap < 2) {
+                    ++runGap;
+                } else if (runStart >= 0) {
+                    const int runEnd = x - runGap - 1;
+                    if (runEnd >= runStart) horizontalRuns.push_back({runStart, runEnd});
+                    runStart = -1;
+                    runGap = 0;
+                }
+            }
+            if (runStart >= 0) horizontalRuns.push_back({runStart, roiX1 - 1});
+            if (horizontalRuns.empty()) continue;
 
-            if (maxX < minX) continue;
+            for (const auto& run : horizontalRuns) {
+            int minX = run.first;
+            int maxX = run.second;
             const int fillWidth = maxX - minX + 1;
             if (fillWidth < std::max(8, (int)std::round(8.0f * scale))) continue;
             if ((float)fillWidth / (float)bandHeight < 1.2f) continue;
@@ -278,6 +295,7 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
                     output.push_back(observation);
                 }
             }
+            } // each independent horizontal color run
         }
     };
 
