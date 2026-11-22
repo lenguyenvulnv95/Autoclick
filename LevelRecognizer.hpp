@@ -20,7 +20,9 @@ inline bool ParseLevelText(const std::string& text, int* outLevel) {
         // Vision often reads the leading digit "1" as I/l/| in two-digit
         // badges. Normalize only when that glyph is immediately followed by
         // a digit; ordinary words such as "Level" remain harmless prefixes.
-        if (!inDigits && groups == 0 &&
+        const bool startsToken = (i == 0) ||
+            !std::isalnum((unsigned char)text[i - 1]);
+        if (!inDigits && groups == 0 && startsToken &&
             (ch == 'I' || ch == 'l' || ch == '|')) {
             std::size_t next = i + 1;
             while (next < text.size() &&
