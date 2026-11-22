@@ -123,7 +123,14 @@ struct Config {
 };
 
 static Config g_Cfg;
+static std::recursive_mutex g_ConfigMutex;
 static std::mutex g_StateMutex;
+static std::atomic<bool> g_MasterEnable{false};
+
+static Config GetConfigSnapshot() {
+    std::lock_guard<std::recursive_mutex> lock(g_ConfigMutex);
+    return g_Cfg;
+}
 static std::atomic<float> g_ScreenPointWidth{0.0f};
 static std::atomic<float> g_ScreenPointHeight{0.0f};
 static std::atomic<uint64_t> g_ImGuiFrameCounter{0};
@@ -154,6 +161,7 @@ namespace ConfigStorage {
     }
 
     void SavePreset(const char* name) {
+        std::lock_guard<std::recursive_mutex> configLock(g_ConfigMutex);
         NSDictionary *dict = @{
             @"autoEngage": @(g_Cfg.autoEngage),
             @"targetQueueEnable": @(g_Cfg.targetQueueEnable),
@@ -191,6 +199,7 @@ namespace ConfigStorage {
     }
 
     void LoadPreset(const char* name) {
+        std::lock_guard<std::recursive_mutex> configLock(g_ConfigMutex);
         NSData *data = [NSData dataWithContentsOfFile:GetConfigFilePath([NSString stringWithUTF8String:name])];
         if (!data) return;
         NSDictionary *dict = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
@@ -292,12 +301,14 @@ namespace TouchEngine {
     static NSMutableDictionary<NSNumber *, UITouch *> *g_ActiveTouches = nil;
 
     CGPoint ApplyJitter(CGPoint pt) {
-        std::uniform_real_distribution<float> dist(-g_Cfg.posJitterPx, g_Cfg.posJitterPx);
+        const Config cfg = GetConfigSnapshot();
+        std::uniform_real_distribution<float> dist(-cfg.posJitterPx, cfg.posJitterPx);
         return CGPointMake(pt.x + dist(rng), pt.y + dist(rng));
     }
 
     int ApplyDelayJitter(int baseMs) {
-        std::uniform_int_distribution<int> dist(-g_Cfg.timeJitterMs, g_Cfg.timeJitterMs);
+        const Config cfg = GetConfigSnapshot();
+        std::uniform_int_distribution<int> dist(-cfg.timeJitterMs, cfg.timeJitterMs);
         return std::max(5, baseMs + dist(rng));
     }
 
@@ -593,6 +604,7 @@ namespace TouchEngine {
     }
 
     void RunComboSequence(CGPoint targetPt, NakComboType comboType, uint64_t token) {
+        const Config cfg = GetConfigSnapshot();
         auto active = [&]() { return token == 0 || HoldIsActive(token); };
         auto delay = [&](int ms) { return token == 0 ? (usleep(std::max(0, ms) * 1000), true) : WaitForHold(token, ms); };
 
@@ -600,43 +612,43 @@ namespace TouchEngine {
             case NakComboType::GANK_LONG_RANGE:
                 // C1: S2 -> S1 -> S1 -> S3 -> AA
                 if (!active()) return;
-                SwipeSkillS2OppositeToward(g_Cfg.skill2Pos, targetPt, 55, token);
-                if (!delay(ApplyDelayJitter(g_Cfg.delayAfterS2Ms))) return;
-                SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50, token);
-                if (!delay(ApplyDelayJitter(g_Cfg.delayAfterS1_1Ms))) return;
-                SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50, token);
-                if (!delay(ApplyDelayJitter(g_Cfg.delayAfterS1_2Ms))) return;
-                TapAt(g_Cfg.skill3Pos, 35, token);
-                if (!delay(ApplyDelayJitter(g_Cfg.delayAfterS3Ms))) return;
-                if (active()) TapAt(g_Cfg.attackPos, 28, token);
+                SwipeSkillS2OppositeToward(cfg.skill2Pos, targetPt, 55, token);
+                if (!delay(ApplyDelayJitter(cfg.delayAfterS2Ms))) return;
+                SwipeSkillToward(cfg.skill1Pos, targetPt, 50, token);
+                if (!delay(ApplyDelayJitter(cfg.delayAfterS1_1Ms))) return;
+                SwipeSkillToward(cfg.skill1Pos, targetPt, 50, token);
+                if (!delay(ApplyDelayJitter(cfg.delayAfterS1_2Ms))) return;
+                TapAt(cfg.skill3Pos, 35, token);
+                if (!delay(ApplyDelayJitter(cfg.delayAfterS3Ms))) return;
+                if (active()) TapAt(cfg.attackPos, 28, token);
                 break;
 
             case NakComboType::CLOSE_COMBAT:
                 // C2: S1 -> AA -> S3 -> S2 -> AA -> S1
                 if (!active()) return;
-                SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50, token);
-                if (!delay(ApplyDelayJitter(g_Cfg.delayAfterS1_1Ms))) return;
-                TapAt(g_Cfg.attackPos, 28, token);
-                if (!delay(ApplyDelayJitter(g_Cfg.delayAfterEmpAAMs))) return;
-                TapAt(g_Cfg.skill3Pos, 35, token);
-                if (!delay(ApplyDelayJitter(g_Cfg.delayAfterS3Ms))) return;
-                SwipeSkillS2OppositeToward(g_Cfg.skill2Pos, targetPt, 55, token);
-                if (!delay(ApplyDelayJitter(g_Cfg.delayAfterS2Ms))) return;
-                TapAt(g_Cfg.attackPos, 28, token);
+                SwipeSkillToward(cfg.skill1Pos, targetPt, 50, token);
+                if (!delay(ApplyDelayJitter(cfg.delayAfterS1_1Ms))) return;
+                TapAt(cfg.attackPos, 28, token);
+                if (!delay(ApplyDelayJitter(cfg.delayAfterEmpAAMs))) return;
+                TapAt(cfg.skill3Pos, 35, token);
+                if (!delay(ApplyDelayJitter(cfg.delayAfterS3Ms))) return;
+                SwipeSkillS2OppositeToward(cfg.skill2Pos, targetPt, 55, token);
+                if (!delay(ApplyDelayJitter(cfg.delayAfterS2Ms))) return;
+                TapAt(cfg.attackPos, 28, token);
                 if (!delay(90)) return;
-                if (active()) SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50, token);
+                if (active()) SwipeSkillToward(cfg.skill1Pos, targetPt, 50, token);
                 break;
 
             case NakComboType::POKE_AND_RUN:
                 // C3: S2 -> S1 -> AA -> S1 retreat
                 if (!active()) return;
-                SwipeSkillS2OppositeToward(g_Cfg.skill2Pos, targetPt, 55, token);
-                if (!delay(ApplyDelayJitter(g_Cfg.delayAfterS2Ms))) return;
-                SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50, token);
-                if (!delay(ApplyDelayJitter(g_Cfg.delayAfterS1_1Ms))) return;
-                TapAt(g_Cfg.attackPos, 30, token);
-                if (!delay(ApplyDelayJitter(g_Cfg.delayAfterEmpAAMs))) return;
-                if (active()) SwipeSkillAwayFrom(g_Cfg.skill1Pos, targetPt, 50, token);
+                SwipeSkillS2OppositeToward(cfg.skill2Pos, targetPt, 55, token);
+                if (!delay(ApplyDelayJitter(cfg.delayAfterS2Ms))) return;
+                SwipeSkillToward(cfg.skill1Pos, targetPt, 50, token);
+                if (!delay(ApplyDelayJitter(cfg.delayAfterS1_1Ms))) return;
+                TapAt(cfg.attackPos, 30, token);
+                if (!delay(ApplyDelayJitter(cfg.delayAfterEmpAAMs))) return;
+                if (active()) SwipeSkillAwayFrom(cfg.skill1Pos, targetPt, 50, token);
                 break;
         }
     }
@@ -679,7 +691,8 @@ namespace TouchEngine {
         const uint64_t token = g_HoldGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
             while (HoldIsActive(token)) {
-                TapAt(g_Cfg.attackPos, 28);
+                const Config cfg = GetConfigSnapshot();
+                TapAt(cfg.attackPos, 28);
                 if (!WaitForHold(token, 75)) break;
             }
         });
@@ -698,7 +711,7 @@ namespace TouchEngine {
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
             RunComboSequence(targetPt, comboType, 0);
             usleep(60 * 1000);
-            g_BotState.store(g_Cfg.masterEnable ? BotState::SCANNING : BotState::IDLE);
+            g_BotState.store(GetConfigSnapshot().masterEnable ? BotState::SCANNING : BotState::IDLE);
         });
     }
 }
@@ -716,7 +729,8 @@ namespace VisionEngine {
     static std::atomic<int> g_FullScreenScanFrames{0};
 
     bool ShouldCapture() {
-        return g_Cfg.masterEnable || g_FullScreenScanFrames.load(std::memory_order_acquire) > 0;
+        return g_MasterEnable.load(std::memory_order_acquire) ||
+               g_FullScreenScanFrames.load(std::memory_order_acquire) > 0;
     }
 
     void RequestFullScreenScan() {
@@ -752,10 +766,11 @@ namespace VisionEngine {
     }
 
     bool HasMinimapEnemyPresence(const uint8_t* bgra, int width, int height, int stride) {
-        int x0 = (int)(g_Cfg.minimapRoi[0] * width);
-        int y0 = (int)(g_Cfg.minimapRoi[1] * height);
-        int x1 = std::min(width, (int)((g_Cfg.minimapRoi[0] + g_Cfg.minimapRoi[2]) * width));
-        int y1 = std::min(height, (int)((g_Cfg.minimapRoi[1] + g_Cfg.minimapRoi[3]) * height));
+        const Config cfg = GetConfigSnapshot();
+        int x0 = (int)(cfg.minimapRoi[0] * width);
+        int y0 = (int)(cfg.minimapRoi[1] * height);
+        int x1 = std::min(width, (int)((cfg.minimapRoi[0] + cfg.minimapRoi[2]) * width));
+        int y1 = std::min(height, (int)((cfg.minimapRoi[1] + cfg.minimapRoi[3]) * height));
 
         int redDots = 0;
         for (int y = y0; y < y1; y += 2) {
@@ -777,6 +792,7 @@ namespace VisionEngine {
             g_IsProcessing.store(false, std::memory_order_release);
             return;
         }
+        const Config cfg = GetConfigSnapshot();
         const float detectorScale = std::sqrt(scaleX * scaleY);
         const bool fullScreenScan = g_FullScreenScanFrames.load(std::memory_order_acquire) > 0;
         if (fullScreenScan) {
@@ -785,10 +801,10 @@ namespace VisionEngine {
                    !g_FullScreenScanFrames.compare_exchange_weak(
                        remaining, remaining - 1, std::memory_order_acq_rel)) {}
         }
-        int rx0 = fullScreenScan ? 0 : (int)(g_Cfg.mainScanRoi[0] * texW);
-        int ry0 = fullScreenScan ? 0 : (int)(g_Cfg.mainScanRoi[1] * texH);
-        int rx1 = fullScreenScan ? texW : std::min(texW, (int)((g_Cfg.mainScanRoi[0] + g_Cfg.mainScanRoi[2]) * texW));
-        int ry1 = fullScreenScan ? texH : std::min(texH, (int)((g_Cfg.mainScanRoi[1] + g_Cfg.mainScanRoi[3]) * texH));
+        int rx0 = fullScreenScan ? 0 : (int)(cfg.mainScanRoi[0] * texW);
+        int ry0 = fullScreenScan ? 0 : (int)(cfg.mainScanRoi[1] * texH);
+        int rx1 = fullScreenScan ? texW : std::min(texW, (int)((cfg.mainScanRoi[0] + cfg.mainScanRoi[2]) * texW));
+        int ry1 = fullScreenScan ? texH : std::min(texH, (int)((cfg.mainScanRoi[1] + cfg.mainScanRoi[3]) * texH));
         if (rx1 <= rx0 || ry1 <= ry0) {
             g_IsProcessing.store(false);
             return;
@@ -954,7 +970,7 @@ namespace VisionEngine {
 
         const int selectedIndex = TargetSelector::SelectLowestHP(
             selectionCandidates,
-            g_Cfg.minConfirmFrames,
+            cfg.minConfirmFrames,
             0.75f,
             g_CurrentLockedId,
             1.0f);
@@ -967,12 +983,12 @@ namespace VisionEngine {
 
         if (chosenTarget && chosenTarget->level > 0 &&
             chosenTarget->detectionConfidence >= 0.75f &&
-            g_Cfg.autoEngage && g_BotState.load() != BotState::EXECUTING) {
+            cfg.autoEngage && g_BotState.load() != BotState::EXECUTING) {
             g_BotState.store(BotState::LOCKED);
             CGPoint bodyAimPoint = CGPointMake(
                 chosenTarget->center.x, chosenTarget->center.y + 42.0f);
             TouchEngine::ExecuteNakSelectedCombo(
-                bodyAimPoint, g_Cfg.selectedCombo, false);
+                bodyAimPoint, cfg.selectedCombo, false);
         }
 
         // Measure the effective Vision processing rate over a rolling one-second window.
@@ -994,10 +1010,11 @@ namespace VisionEngine {
     void SubmitMetalTextureAsync(id<MTLTexture> texture,
                                   id<MTLCommandBuffer> commandBuffer) {
         if (!ShouldCapture() || !texture || !commandBuffer) return;
+        const Config cfg = GetConfigSnapshot();
         if (texture.pixelFormat != MTLPixelFormatBGRA8Unorm) return;
 
         const double now = CACurrentMediaTime();
-        const double minInterval = 1.0 / (double)std::max(1, g_Cfg.captureFps);
+        const double minInterval = 1.0 / (double)std::max(1, cfg.captureFps);
         const double previousFrameTime = g_LastFrameTime.load(std::memory_order_relaxed);
         if ((now - previousFrameTime) < minInterval) return;
         if (g_IsProcessing.exchange(true, std::memory_order_acq_rel)) return;
@@ -1296,17 +1313,19 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 }
 
 - (void)syncControlButtonFramesFromConfig {
+    std::lock_guard<std::recursive_mutex> configLock(g_ConfigMutex);
+    const Config cfg = g_Cfg;
     CGSize size = self.view.bounds.size;
     if (size.width <= 0.0 || size.height <= 0.0) return;
     const CGFloat d = 42.0f;
-    self.floatingToggleBtn.center = CGPointMake(g_Cfg.floatingTogglePos[0] * size.width, g_Cfg.floatingTogglePos[1] * size.height);
-    self.menuToggleBtn.center = CGPointMake(g_Cfg.menuTogglePos[0] * size.width, g_Cfg.menuTogglePos[1] * size.height);
-    self.btnC1.center = CGPointMake(g_Cfg.quickC1Pos[0] * size.width, g_Cfg.quickC1Pos[1] * size.height);
-    self.btnC2.center = CGPointMake(g_Cfg.quickC2Pos[0] * size.width, g_Cfg.quickC2Pos[1] * size.height);
-    self.btnC3.center = CGPointMake(g_Cfg.quickC3Pos[0] * size.width, g_Cfg.quickC3Pos[1] * size.height);
-    self.btnAA.center = CGPointMake(g_Cfg.quickAAPos[0] * size.width, g_Cfg.quickAAPos[1] * size.height);
-    const CGFloat quickD = MAX(30.0f, MIN(72.0f, g_Cfg.quickButtonSize));
-    const CGFloat aaD = MAX(30.0f, MIN(88.0f, g_Cfg.quickAAButtonSize));
+    self.floatingToggleBtn.center = CGPointMake(cfg.floatingTogglePos[0] * size.width, cfg.floatingTogglePos[1] * size.height);
+    self.menuToggleBtn.center = CGPointMake(cfg.menuTogglePos[0] * size.width, cfg.menuTogglePos[1] * size.height);
+    self.btnC1.center = CGPointMake(cfg.quickC1Pos[0] * size.width, cfg.quickC1Pos[1] * size.height);
+    self.btnC2.center = CGPointMake(cfg.quickC2Pos[0] * size.width, cfg.quickC2Pos[1] * size.height);
+    self.btnC3.center = CGPointMake(cfg.quickC3Pos[0] * size.width, cfg.quickC3Pos[1] * size.height);
+    self.btnAA.center = CGPointMake(cfg.quickAAPos[0] * size.width, cfg.quickAAPos[1] * size.height);
+    const CGFloat quickD = MAX(30.0f, MIN(72.0f, cfg.quickButtonSize));
+    const CGFloat aaD = MAX(30.0f, MIN(88.0f, cfg.quickAAButtonSize));
     self.btnC1.bounds = CGRectMake(0, 0, quickD, quickD);
     self.btnC2.bounds = CGRectMake(0, 0, quickD, quickD);
     self.btnC3.bounds = CGRectMake(0, 0, quickD, quickD);
@@ -1315,15 +1334,15 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     self.btnC2.layer.cornerRadius = quickD * 0.5f;
     self.btnC3.layer.cornerRadius = quickD * 0.5f;
     self.btnAA.layer.cornerRadius = aaD * 0.5f;
-    self.skillMarker1.center = CGPointMake(g_Cfg.skill1Pos[0] * size.width, g_Cfg.skill1Pos[1] * size.height);
-    self.skillMarker2.center = CGPointMake(g_Cfg.skill2Pos[0] * size.width, g_Cfg.skill2Pos[1] * size.height);
-    self.skillMarker3.center = CGPointMake(g_Cfg.skill3Pos[0] * size.width, g_Cfg.skill3Pos[1] * size.height);
-    self.floatingToggleBtn.alpha = g_Cfg.uiOpacity;
-    self.menuToggleBtn.alpha = g_Cfg.uiOpacity;
-    self.btnC1.alpha = g_Cfg.uiOpacity;
-    self.btnC2.alpha = g_Cfg.uiOpacity;
-    self.btnC3.alpha = g_Cfg.uiOpacity;
-    self.btnAA.alpha = g_Cfg.uiOpacity;
+    self.skillMarker1.center = CGPointMake(cfg.skill1Pos[0] * size.width, cfg.skill1Pos[1] * size.height);
+    self.skillMarker2.center = CGPointMake(cfg.skill2Pos[0] * size.width, cfg.skill2Pos[1] * size.height);
+    self.skillMarker3.center = CGPointMake(cfg.skill3Pos[0] * size.width, cfg.skill3Pos[1] * size.height);
+    self.floatingToggleBtn.alpha = cfg.uiOpacity;
+    self.menuToggleBtn.alpha = cfg.uiOpacity;
+    self.btnC1.alpha = cfg.uiOpacity;
+    self.btnC2.alpha = cfg.uiOpacity;
+    self.btnC3.alpha = cfg.uiOpacity;
+    self.btnAA.alpha = cfg.uiOpacity;
     self.skillMarker1.hidden = !g_ShowImGuiMenu;
     self.skillMarker2.hidden = !g_ShowImGuiMenu;
     self.skillMarker3.hidden = !g_ShowImGuiMenu;
@@ -1390,6 +1409,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     [pan setTranslation:CGPointZero inView:self.view];
 
     // The floating skill controls also define the in-game touch coordinates.
+    std::lock_guard<std::recursive_mutex> configLock(g_ConfigMutex);
     const float nx = (float)(newCenter.x / MAX(1.0, screen.width));
     const float ny = (float)(newCenter.y / MAX(1.0, screen.height));
     if (btn == self.floatingToggleBtn) {
@@ -1431,6 +1451,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 }
 
 - (void)onQuickComboTap:(UIButton *)sender {
+    std::lock_guard<std::recursive_mutex> configLock(g_ConfigMutex);
     int comboInt = [objc_getAssociatedObject(sender, "comboType") intValue];
     if (comboInt < 1 || comboInt > 3) return;
     g_Cfg.selectedCombo = (NakComboType)comboInt;
@@ -1438,7 +1459,8 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 }
 
 - (void)onQuickAAStart:(UIButton *)sender {
-    if (!g_Cfg.masterEnable) {
+    const Config cfg = GetConfigSnapshot();
+    if (!cfg.masterEnable) {
         objc_setAssociatedObject(sender, "isActive", @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [self updateQuickButtonHighlights];
         return;
@@ -1446,7 +1468,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     const int targetId = [self currentLockedTargetId];
     objc_setAssociatedObject(sender, "isActive", @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     // If Vision is still confirming the target, the held-AA worker waits for its lock.
-    TouchEngine::StartHeldComboForTarget(targetId, g_Cfg.selectedCombo);
+    TouchEngine::StartHeldComboForTarget(targetId, cfg.selectedCombo);
     [self updateQuickButtonHighlights];
 }
 
@@ -1457,17 +1479,18 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 }
 
 - (void)updateQuickButtonHighlights {
-    UIColor *stoppedCol = [UIColor colorWithRed:0.82 green:0.12 blue:0.16 alpha:g_Cfg.uiOpacity];
-    UIColor *activeCol = [UIColor colorWithRed:0.10 green:0.75 blue:0.35 alpha:g_Cfg.uiOpacity];
+    const Config cfg = GetConfigSnapshot();
+    UIColor *stoppedCol = [UIColor colorWithRed:0.82 green:0.12 blue:0.16 alpha:cfg.uiOpacity];
+    UIColor *activeCol = [UIColor colorWithRed:0.10 green:0.75 blue:0.35 alpha:cfg.uiOpacity];
     UIButton *comboButtons[] = { self.btnC1, self.btnC2, self.btnC3 };
     for (int i = 0; i < 3; ++i) {
         NakComboType type = (NakComboType)(i + 1);
-        comboButtons[i].backgroundColor = (g_Cfg.selectedCombo == type) ? activeCol : stoppedCol;
-        comboButtons[i].hidden = self.floatingToggleBtn.hidden || !g_Cfg.showQuickComboBtns;
+        comboButtons[i].backgroundColor = (cfg.selectedCombo == type) ? activeCol : stoppedCol;
+        comboButtons[i].hidden = self.floatingToggleBtn.hidden || !cfg.showQuickComboBtns;
     }
     self.btnAA.backgroundColor =
         [objc_getAssociatedObject(self.btnAA, "isActive") boolValue] ? activeCol : stoppedCol;
-    self.btnAA.hidden = self.floatingToggleBtn.hidden || !g_Cfg.showQuickComboBtns;
+    self.btnAA.hidden = self.floatingToggleBtn.hidden || !cfg.showQuickComboBtns;
     BOOL hideMarkers = self.floatingToggleBtn.hidden || !g_ShowImGuiMenu;
     self.skillMarker1.hidden = hideMarkers;
     self.skillMarker2.hidden = hideMarkers;
@@ -1475,7 +1498,9 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 }
 
 - (void)onToggleBot {
+    std::lock_guard<std::recursive_mutex> configLock(g_ConfigMutex);
     g_Cfg.masterEnable = !g_Cfg.masterEnable;
+    g_MasterEnable.store(g_Cfg.masterEnable, std::memory_order_release);
     if (!g_Cfg.masterEnable) {
         TouchEngine::StopHeldAction();
         objc_setAssociatedObject(self.btnAA, "isActive", @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -1514,13 +1539,14 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 }
 
 - (void)onStealthGesture {
+    const Config cfg = GetConfigSnapshot();
     BOOL hide = !self.floatingToggleBtn.hidden;
     self.floatingToggleBtn.hidden = hide;
     self.menuToggleBtn.hidden = hide;
-    self.btnC1.hidden = hide || !g_Cfg.showQuickComboBtns;
-    self.btnC2.hidden = hide || !g_Cfg.showQuickComboBtns;
-    self.btnC3.hidden = hide || !g_Cfg.showQuickComboBtns;
-    self.btnAA.hidden = hide || !g_Cfg.showQuickComboBtns;
+    self.btnC1.hidden = hide || !cfg.showQuickComboBtns;
+    self.btnC2.hidden = hide || !cfg.showQuickComboBtns;
+    self.btnC3.hidden = hide || !cfg.showQuickComboBtns;
+    self.btnAA.hidden = hide || !cfg.showQuickComboBtns;
     if (hide) {
         TouchEngine::StopHeldAction();
         objc_setAssociatedObject(self.btnAA, "isActive", @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -1561,6 +1587,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 - (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { [self updateImGuiTouch:touches phase:UITouchPhaseCancelled]; }
 
 - (void)RenderImGuiTabs {
+    std::lock_guard<std::recursive_mutex> configLock(g_ConfigMutex);
     ImGui::SetNextWindowSize(ImVec2(480, 380), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("PX · Nak Quick Combos", &g_ShowImGuiMenu, ImGuiWindowFlags_NoCollapse)) {
         if (!g_ShowImGuiMenu) {
@@ -1746,8 +1773,9 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 }
 
 - (void)drawInMTKView:(MTKView *)view {
+    const Config cfg = GetConfigSnapshot();
     bool hasEspToDraw = false;
-    if (g_Cfg.masterEnable && g_Cfg.drawDebugEsp) {
+    if (cfg.masterEnable && cfg.drawDebugEsp) {
         std::lock_guard<std::mutex> lock(g_StateMutex);
         hasEspToDraw = !g_TrackedTargets.empty();
     }
@@ -1794,7 +1822,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
         ImDrawList *bg = ImGui::GetBackgroundDrawList();
         std::lock_guard<std::mutex> lock(g_StateMutex);
         for (const auto& t : g_TrackedTargets) {
-            if (t.consecutiveFrames < g_Cfg.minConfirmFrames) continue;
+            if (t.consecutiveFrames < cfg.minConfirmFrames) continue;
             bool isLocked = (t.id == g_CurrentLockedId);
             ImU32 col = isLocked ? IM_COL32(255, 50, 50, 230) : IM_COL32(255, 210, 40, 190);
             float halfW = t.width * 0.5f;
