@@ -16,6 +16,11 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/ocornut/imgui.git
 
+      - name: Test LevelRecognizer parser
+        run: |
+          clang++ -std=c++17 -Wall -Wextra -Werror -I. tests/LevelRecognizerTests.cpp -o /tmp/level-recognizer-tests
+          /tmp/level-recognizer-tests
+
       - name: Compile AutoClick.dylib
         run: |
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
