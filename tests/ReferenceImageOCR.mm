@@ -27,18 +27,43 @@ int main(int argc, const char* argv[]) {
                 continue;
             }
 
+            const size_t width = CGImageGetWidth(image);
+            const size_t height = CGImageGetHeight(image);
+            const size_t scaledWidth = width * 3;
+            const size_t scaledHeight = height * 3;
+            CGColorSpaceRef rgb = CGColorSpaceCreateDeviceRGB();
+            CGContextRef bitmap = CGBitmapContextCreate(
+                nullptr, scaledWidth, scaledHeight, 8, 0, rgb,
+                kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst);
+            CGColorSpaceRelease(rgb);
+            if (!bitmap) {
+                CGImageRelease(image);
+                fprintf(stderr, "UPSCALE_FAILED %s\\n", argv[i]);
+                ++failures;
+                continue;
+            }
+            CGContextSetInterpolationQuality(bitmap, kCGInterpolationHigh);
+            CGContextDrawImage(bitmap, CGRectMake(0, 0, scaledWidth, scaledHeight), image);
+            CGImageRef scaledImage = CGBitmapContextCreateImage(bitmap);
+            CGContextRelease(bitmap);
+            CGImageRelease(image);
+            if (!scaledImage) {
+                fprintf(stderr, "UPSCALE_IMAGE_FAILED %s\\n", argv[i]);
+                ++failures;
+                continue;
+            }
+
             VNRecognizeTextRequest* request = [[VNRecognizeTextRequest alloc] init];
             request.recognitionLevel = VNRequestTextRecognitionLevelAccurate;
             request.usesLanguageCorrection = NO;
-            request.minimumTextHeight = 0.005;
+            request.minimumTextHeight = 0.003;
             request.recognitionLanguages = @[@"en-US"];
 
             VNImageRequestHandler* handler =
-                [[VNImageRequestHandler alloc] initWithCGImage:image options:@{}];
+                [[VNImageRequestHandler alloc] initWithCGImage:scaledImage options:@{}];
             NSError* error = nil;
             BOOL ok = [handler performRequests:@[request] error:&error];
-            const size_t width = CGImageGetWidth(image);
-            const size_t height = CGImageGetHeight(image);
+            CGImageRelease(scaledImage);
             printf("IMAGE %s %zux%zu\\n", argv[i], width, height);
 
             if (!ok || error) {
