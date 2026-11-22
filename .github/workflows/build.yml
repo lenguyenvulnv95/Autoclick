@@ -31,6 +31,11 @@ jobs:
           clang++ -std=c++17 -Wall -Wextra -Werror -I. tests/HPAnalyzerTests.cpp -o /tmp/hp-analyzer-tests
           /tmp/hp-analyzer-tests
 
+      - name: Test lowest-HP target selection
+        run: |
+          clang++ -std=c++17 -Wall -Wextra -Werror -I. tests/TargetSelectorTests.cpp -o /tmp/target-selector-tests
+          /tmp/target-selector-tests
+
       - name: Inspect reference images with Apple Vision OCR
         run: |
           unzip -q Picture.zip -d /tmp/picture-reference
