@@ -871,7 +871,7 @@ namespace VisionEngine {
                 // Do not blend a newly identified hero with the previous
                 // track's HP estimate; that can preserve a stale 20% reading.
                 target.hpPercent = (target.consecutiveFrames > 0 && !targetIdentityChanged)
-                    ? (target.hpPercent * 0.65f + observation.hpPercent * 0.35f)
+                    ? (target.hpPercent * 0.25f + observation.hpPercent * 0.75f)
                     : observation.hpPercent;
                 target.detectionConfidence = observation.confidence;
                 target.consecutiveFrames++;
