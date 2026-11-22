@@ -95,6 +95,12 @@ struct Config {
 
     float floatingTogglePos[2] = {0.03f, 0.28f}; // Nút ON/OFF
     float menuTogglePos[2] = {0.09f, 0.28f};    // Nút mở menu PX
+    // Vị trí riêng của các nút kích hoạt combo, tách khỏi tọa độ skill trong game.
+    float quickC1Pos[2] = {0.12f, 0.14f};
+    float quickC2Pos[2] = {0.18f, 0.14f};
+    float quickC3Pos[2] = {0.24f, 0.14f};
+    float quickAAPos[2] = {0.30f, 0.14f};
+    float quickButtonSize = 42.0f;
     float skill1Pos[2] = {0.78f, 0.82f}; // Chiêu 1 (2 lần)
     float skill2Pos[2] = {0.84f, 0.65f}; // Chiêu 2 (lướt ngược)
     float skill3Pos[2] = {0.92f, 0.52f}; // Chiêu 3 (Ulti)
@@ -149,6 +155,11 @@ namespace ConfigStorage {
             @"delayAfterS1_2Ms": @(g_Cfg.delayAfterS1_2Ms),
             @"floatingToggleX": @(g_Cfg.floatingTogglePos[0]), @"floatingToggleY": @(g_Cfg.floatingTogglePos[1]),
             @"menuToggleX": @(g_Cfg.menuTogglePos[0]), @"menuToggleY": @(g_Cfg.menuTogglePos[1]),
+            @"quickC1X": @(g_Cfg.quickC1Pos[0]), @"quickC1Y": @(g_Cfg.quickC1Pos[1]),
+            @"quickC2X": @(g_Cfg.quickC2Pos[0]), @"quickC2Y": @(g_Cfg.quickC2Pos[1]),
+            @"quickC3X": @(g_Cfg.quickC3Pos[0]), @"quickC3Y": @(g_Cfg.quickC3Pos[1]),
+            @"quickAAX": @(g_Cfg.quickAAPos[0]), @"quickAAY": @(g_Cfg.quickAAPos[1]),
+            @"quickButtonSize": @(g_Cfg.quickButtonSize),
             @"skill1X": @(g_Cfg.skill1Pos[0]), @"skill1Y": @(g_Cfg.skill1Pos[1]),
             @"skill2X": @(g_Cfg.skill2Pos[0]), @"skill2Y": @(g_Cfg.skill2Pos[1]),
             @"skill3X": @(g_Cfg.skill3Pos[0]), @"skill3Y": @(g_Cfg.skill3Pos[1]),
@@ -187,6 +198,15 @@ namespace ConfigStorage {
         if (dict[@"floatingToggleY"]) g_Cfg.floatingTogglePos[1] = [dict[@"floatingToggleY"] floatValue];
         if (dict[@"menuToggleX"]) g_Cfg.menuTogglePos[0] = [dict[@"menuToggleX"] floatValue];
         if (dict[@"menuToggleY"]) g_Cfg.menuTogglePos[1] = [dict[@"menuToggleY"] floatValue];
+        if (dict[@"quickC1X"]) g_Cfg.quickC1Pos[0] = [dict[@"quickC1X"] floatValue];
+        if (dict[@"quickC1Y"]) g_Cfg.quickC1Pos[1] = [dict[@"quickC1Y"] floatValue];
+        if (dict[@"quickC2X"]) g_Cfg.quickC2Pos[0] = [dict[@"quickC2X"] floatValue];
+        if (dict[@"quickC2Y"]) g_Cfg.quickC2Pos[1] = [dict[@"quickC2Y"] floatValue];
+        if (dict[@"quickC3X"]) g_Cfg.quickC3Pos[0] = [dict[@"quickC3X"] floatValue];
+        if (dict[@"quickC3Y"]) g_Cfg.quickC3Pos[1] = [dict[@"quickC3Y"] floatValue];
+        if (dict[@"quickAAX"]) g_Cfg.quickAAPos[0] = [dict[@"quickAAX"] floatValue];
+        if (dict[@"quickAAY"]) g_Cfg.quickAAPos[1] = [dict[@"quickAAY"] floatValue];
+        if (dict[@"quickButtonSize"]) g_Cfg.quickButtonSize = [dict[@"quickButtonSize"] floatValue];
         if (dict[@"skill1X"]) g_Cfg.skill1Pos[0] = [dict[@"skill1X"] floatValue];
         if (dict[@"skill1Y"]) g_Cfg.skill1Pos[1] = [dict[@"skill1Y"] floatValue];
         if (dict[@"skill2X"]) g_Cfg.skill2Pos[0] = [dict[@"skill2X"] floatValue];
@@ -1047,6 +1067,9 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 @property (nonatomic, strong) UIButton *btnC2;
 @property (nonatomic, strong) UIButton *btnC3;
 @property (nonatomic, strong) UIButton *btnAA;
+@property (nonatomic, strong) UIButton *skillMarker1;
+@property (nonatomic, strong) UIButton *skillMarker2;
+@property (nonatomic, strong) UIButton *skillMarker3;
 @end
 
 @implementation PXOverlayController
@@ -1131,6 +1154,11 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     self.btnAA = [self createQuickButton:@"AA" frame:CGRectMake(276, 110, 42, 42) combo:NakComboType::GANK_LONG_RANGE];
     objc_setAssociatedObject(self.btnAA, "isAttackButton", @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
+    // Ba dau moc tron vang la toa do cham/vuot skill that trong game.
+    self.skillMarker1 = [self createSkillMarker:@"S1"];
+    self.skillMarker2 = [self createSkillMarker:@"S2"];
+    self.skillMarker3 = [self createSkillMarker:@"S3"];
+
     [self updateQuickButtonHighlights];
 
     UITapGestureRecognizer *stealthTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(onStealthGesture)];
@@ -1150,20 +1178,48 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     const CGFloat d = 42.0f;
     self.floatingToggleBtn.center = CGPointMake(g_Cfg.floatingTogglePos[0] * size.width, g_Cfg.floatingTogglePos[1] * size.height);
     self.menuToggleBtn.center = CGPointMake(g_Cfg.menuTogglePos[0] * size.width, g_Cfg.menuTogglePos[1] * size.height);
-    self.btnC1.center = CGPointMake(g_Cfg.skill1Pos[0] * size.width, g_Cfg.skill1Pos[1] * size.height);
-    self.btnC2.center = CGPointMake(g_Cfg.skill2Pos[0] * size.width, g_Cfg.skill2Pos[1] * size.height);
-    self.btnC3.center = CGPointMake(g_Cfg.skill3Pos[0] * size.width, g_Cfg.skill3Pos[1] * size.height);
-    self.btnAA.center = CGPointMake(g_Cfg.attackPos[0] * size.width, g_Cfg.attackPos[1] * size.height);
-    self.btnC1.bounds = CGRectMake(0, 0, d, d);
-    self.btnC2.bounds = CGRectMake(0, 0, d, d);
-    self.btnC3.bounds = CGRectMake(0, 0, d, d);
-    self.btnAA.bounds = CGRectMake(0, 0, d, d);
+    self.btnC1.center = CGPointMake(g_Cfg.quickC1Pos[0] * size.width, g_Cfg.quickC1Pos[1] * size.height);
+    self.btnC2.center = CGPointMake(g_Cfg.quickC2Pos[0] * size.width, g_Cfg.quickC2Pos[1] * size.height);
+    self.btnC3.center = CGPointMake(g_Cfg.quickC3Pos[0] * size.width, g_Cfg.quickC3Pos[1] * size.height);
+    self.btnAA.center = CGPointMake(g_Cfg.quickAAPos[0] * size.width, g_Cfg.quickAAPos[1] * size.height);
+    const CGFloat quickD = MAX(30.0f, MIN(72.0f, g_Cfg.quickButtonSize));
+    self.btnC1.bounds = CGRectMake(0, 0, quickD, quickD);
+    self.btnC2.bounds = CGRectMake(0, 0, quickD, quickD);
+    self.btnC3.bounds = CGRectMake(0, 0, quickD, quickD);
+    self.btnAA.bounds = CGRectMake(0, 0, quickD, quickD);
+    self.btnC1.layer.cornerRadius = quickD * 0.5f;
+    self.btnC2.layer.cornerRadius = quickD * 0.5f;
+    self.btnC3.layer.cornerRadius = quickD * 0.5f;
+    self.btnAA.layer.cornerRadius = quickD * 0.5f;
+    self.skillMarker1.center = CGPointMake(g_Cfg.skill1Pos[0] * size.width, g_Cfg.skill1Pos[1] * size.height);
+    self.skillMarker2.center = CGPointMake(g_Cfg.skill2Pos[0] * size.width, g_Cfg.skill2Pos[1] * size.height);
+    self.skillMarker3.center = CGPointMake(g_Cfg.skill3Pos[0] * size.width, g_Cfg.skill3Pos[1] * size.height);
     self.floatingToggleBtn.alpha = g_Cfg.uiOpacity;
     self.menuToggleBtn.alpha = g_Cfg.uiOpacity;
     self.btnC1.alpha = g_Cfg.uiOpacity;
     self.btnC2.alpha = g_Cfg.uiOpacity;
     self.btnC3.alpha = g_Cfg.uiOpacity;
     self.btnAA.alpha = g_Cfg.uiOpacity;
+    self.skillMarker1.hidden = !g_ShowImGuiMenu;
+    self.skillMarker2.hidden = !g_ShowImGuiMenu;
+    self.skillMarker3.hidden = !g_ShowImGuiMenu;
+}
+
+- (UIButton *)createSkillMarker:(NSString *)title {
+    UIButton *marker = [UIButton buttonWithType:UIButtonTypeCustom];
+    marker.tag = 999;
+    marker.bounds = CGRectMake(0, 0, 38, 38);
+    marker.layer.cornerRadius = 19;
+    marker.layer.borderWidth = 2.0f;
+    marker.layer.borderColor = [UIColor colorWithRed:1.0 green:0.88 blue:0.10 alpha:1.0].CGColor;
+    marker.backgroundColor = [UIColor colorWithRed:1.0 green:0.78 blue:0.0 alpha:0.78];
+    [marker setTitle:title forState:UIControlStateNormal];
+    marker.titleLabel.font = [UIFont boldSystemFontOfSize:10];
+    [marker setTitleColor:[UIColor blackColor] forState:UIControlStateNormal];
+    marker.hidden = YES;
+    [self makeDraggable:marker];
+    [self.view addSubview:marker];
+    return marker;
 }
 
 - (UIButton *)createQuickButton:(NSString *)title frame:(CGRect)frame combo:(NakComboType)combo {
@@ -1174,8 +1230,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     btn.backgroundColor = [UIColor colorWithRed:0.20 green:0.20 blue:0.30 alpha:g_Cfg.uiOpacity];
     [btn setTitle:title forState:UIControlStateNormal];
     btn.titleLabel.font = [UIFont boldSystemFontOfSize:13];
-    [btn addTarget:self action:@selector(onQuickComboDown:) forControlEvents:UIControlEventTouchDown];
-    [btn addTarget:self action:@selector(onQuickComboUp:) forControlEvents:(UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel)];
+    [btn addTarget:self action:@selector(onQuickComboTap:) forControlEvents:UIControlEventTouchUpInside];
     objc_setAssociatedObject(btn, "comboType", @((int)combo), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [self makeDraggable:btn];
     [self.view addSubview:btn];
@@ -1213,13 +1268,19 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     } else if (btn == self.menuToggleBtn) {
         g_Cfg.menuTogglePos[0] = nx; g_Cfg.menuTogglePos[1] = ny;
     } else if (btn == self.btnC1) {
-        g_Cfg.skill1Pos[0] = nx; g_Cfg.skill1Pos[1] = ny;
+        g_Cfg.quickC1Pos[0] = nx; g_Cfg.quickC1Pos[1] = ny;
     } else if (btn == self.btnC2) {
-        g_Cfg.skill2Pos[0] = nx; g_Cfg.skill2Pos[1] = ny;
+        g_Cfg.quickC2Pos[0] = nx; g_Cfg.quickC2Pos[1] = ny;
     } else if (btn == self.btnC3) {
-        g_Cfg.skill3Pos[0] = nx; g_Cfg.skill3Pos[1] = ny;
+        g_Cfg.quickC3Pos[0] = nx; g_Cfg.quickC3Pos[1] = ny;
     } else if (btn == self.btnAA) {
-        g_Cfg.attackPos[0] = nx; g_Cfg.attackPos[1] = ny;
+        g_Cfg.quickAAPos[0] = nx; g_Cfg.quickAAPos[1] = ny;
+    } else if (btn == self.skillMarker1) {
+        g_Cfg.skill1Pos[0] = nx; g_Cfg.skill1Pos[1] = ny;
+    } else if (btn == self.skillMarker2) {
+        g_Cfg.skill2Pos[0] = nx; g_Cfg.skill2Pos[1] = ny;
+    } else if (btn == self.skillMarker3) {
+        g_Cfg.skill3Pos[0] = nx; g_Cfg.skill3Pos[1] = ny;
     }
 }
 
@@ -1235,35 +1296,37 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     return aimPt;
 }
 
-- (void)onQuickComboDown:(UIButton *)sender {
-    if ([objc_getAssociatedObject(sender, "isAttackButton") boolValue]) {
-        TouchEngine::StartHeldAttack();
-        sender.backgroundColor = [UIColor colorWithRed:0.10 green:0.75 blue:0.35 alpha:g_Cfg.uiOpacity];
-        return;
-    }
-    int comboInt = [objc_getAssociatedObject(sender, "comboType") intValue];
-    g_Cfg.selectedCombo = (NakComboType)comboInt;
-    [self updateQuickButtonHighlights];
-    sender.backgroundColor = [UIColor colorWithRed:0.10 green:0.75 blue:0.35 alpha:g_Cfg.uiOpacity];
-    TouchEngine::StartHeldCombo([self currentAimPoint], g_Cfg.selectedCombo);
-}
-
-- (void)onQuickComboUp:(UIButton *)sender {
+- (void)onQuickComboTap:(UIButton *)sender {
+    const BOOL wasActive = [objc_getAssociatedObject(sender, "isActive") boolValue];
     TouchEngine::StopHeldAction();
+    for (UIButton *button in @[self.btnC1, self.btnC2, self.btnC3, self.btnAA]) {
+        objc_setAssociatedObject(button, "isActive", @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    if (!wasActive) {
+        objc_setAssociatedObject(sender, "isActive", @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if ([objc_getAssociatedObject(sender, "isAttackButton") boolValue]) {
+            TouchEngine::StartHeldAttack();
+        } else {
+            int comboInt = [objc_getAssociatedObject(sender, "comboType") intValue];
+            g_Cfg.selectedCombo = (NakComboType)comboInt;
+            TouchEngine::StartHeldCombo([self currentAimPoint], g_Cfg.selectedCombo);
+        }
+    }
     [self updateQuickButtonHighlights];
 }
-
 
 - (void)updateQuickButtonHighlights {
     UIColor *stoppedCol = [UIColor colorWithRed:0.82 green:0.12 blue:0.16 alpha:g_Cfg.uiOpacity];
-    self.btnC1.backgroundColor = stoppedCol;
-    self.btnC2.backgroundColor = stoppedCol;
-    self.btnC3.backgroundColor = stoppedCol;
-    self.btnAA.backgroundColor = stoppedCol;
-    self.btnC1.hidden = !g_Cfg.showQuickComboBtns;
-    self.btnC2.hidden = !g_Cfg.showQuickComboBtns;
-    self.btnC3.hidden = !g_Cfg.showQuickComboBtns;
-    self.btnAA.hidden = !g_Cfg.showQuickComboBtns;
+    UIColor *activeCol = [UIColor colorWithRed:0.10 green:0.75 blue:0.35 alpha:g_Cfg.uiOpacity];
+    for (UIButton *button in @[self.btnC1, self.btnC2, self.btnC3, self.btnAA]) {
+        BOOL active = [objc_getAssociatedObject(button, "isActive") boolValue];
+        button.backgroundColor = active ? activeCol : stoppedCol;
+        button.hidden = !g_Cfg.showQuickComboBtns;
+    }
+    self.skillMarker1.hidden = !g_ShowImGuiMenu;
+    self.skillMarker2.hidden = !g_ShowImGuiMenu;
+    self.skillMarker3.hidden = !g_ShowImGuiMenu;
 }
 
 - (void)onToggleBot {
@@ -1291,6 +1354,12 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     [self.view bringSubviewToFront:self.btnC2];
     [self.view bringSubviewToFront:self.btnC3];
     [self.view bringSubviewToFront:self.btnAA];
+    if (g_ShowImGuiMenu) {
+        [self.view bringSubviewToFront:self.skillMarker1];
+        [self.view bringSubviewToFront:self.skillMarker2];
+        [self.view bringSubviewToFront:self.skillMarker3];
+    }
+    [self updateQuickButtonHighlights];
 }
 
 - (void)onStealthGesture {
@@ -1301,7 +1370,13 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     self.btnC2.hidden = hide || !g_Cfg.showQuickComboBtns;
     self.btnC3.hidden = hide || !g_Cfg.showQuickComboBtns;
     self.btnAA.hidden = hide || !g_Cfg.showQuickComboBtns;
-    if (hide) TouchEngine::StopHeldAction();
+    if (hide) {
+        TouchEngine::StopHeldAction();
+        for (UIButton *button in @[self.btnC1, self.btnC2, self.btnC3, self.btnAA]) {
+            objc_setAssociatedObject(button, "isActive", @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        [self updateQuickButtonHighlights];
+    }
     if (hide) {
         g_ShowImGuiMenu = false;
         g_ImGuiWindowRect = CGRectZero;
@@ -1388,14 +1463,21 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
             ImGui::Separator();
             ImGui::SliderFloat("Touch Jitter (px)", &g_Cfg.posJitterPx, 0.0f, 12.0f, "%.1f");
             ImGui::SliderInt("Delay Jitter (ms)", &g_Cfg.timeJitterMs, 0, 45);
+            ImGui::Separator();
+            if (ImGui::SliderFloat("Kich thuoc nut C1/C2/C3/AA", &g_Cfg.quickButtonSize, 30.0f, 72.0f, "%.0f px")) {
+                [self syncControlButtonFramesFromConfig];
+            }
             ImGui::EndTabItem();
         }
 
         if (ImGui::BeginTabItem("Toa Do Nut")) {
+            ImGui::Text("Keo 3 moc tron VANG S1/S2/S3 tren man hinh vao dung vi tri skill trong game.");
+            ImGui::TextDisabled("Moc vang chi hien khi menu PX mo; toa do nay duoc dung de cham/vuot skill.");
             ImGui::SliderFloat2("Chieu 1 (X, Y)", g_Cfg.skill1Pos, 0.5f, 1.0f, "%.2f");
             ImGui::SliderFloat2("Chieu 2 (X, Y)", g_Cfg.skill2Pos, 0.5f, 1.0f, "%.2f");
             ImGui::SliderFloat2("Chieu 3 (X, Y)", g_Cfg.skill3Pos, 0.5f, 1.0f, "%.2f");
             ImGui::SliderFloat2("Danh Thuong (X, Y)", g_Cfg.attackPos, 0.5f, 1.0f, "%.2f");
+            if (ImGui::Button("Cap nhat vi tri moc vang")) [self syncControlButtonFramesFromConfig];
             ImGui::EndTabItem();
         }
 
