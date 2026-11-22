@@ -93,6 +93,8 @@ struct Config {
     float maxHpHeight = 14.0f;          // Chiều cao tối đa thanh máu (px)
     int minConfirmFrames = 2;           // Số frame liên tiếp để xác nhận mục tiêu
 
+    float floatingTogglePos[2] = {0.03f, 0.28f}; // Nút ON/OFF
+    float menuTogglePos[2] = {0.09f, 0.28f};    // Nút mở menu PX
     float skill1Pos[2] = {0.78f, 0.82f}; // Chiêu 1 (2 lần)
     float skill2Pos[2] = {0.84f, 0.65f}; // Chiêu 2 (lướt ngược)
     float skill3Pos[2] = {0.92f, 0.52f}; // Chiêu 3 (Ulti)
@@ -145,6 +147,8 @@ namespace ConfigStorage {
             @"delayAfterEmpAAMs": @(g_Cfg.delayAfterEmpAAMs),
             @"delayAfterS3Ms": @(g_Cfg.delayAfterS3Ms),
             @"delayAfterS1_2Ms": @(g_Cfg.delayAfterS1_2Ms),
+            @"floatingToggleX": @(g_Cfg.floatingTogglePos[0]), @"floatingToggleY": @(g_Cfg.floatingTogglePos[1]),
+            @"menuToggleX": @(g_Cfg.menuTogglePos[0]), @"menuToggleY": @(g_Cfg.menuTogglePos[1]),
             @"skill1X": @(g_Cfg.skill1Pos[0]), @"skill1Y": @(g_Cfg.skill1Pos[1]),
             @"skill2X": @(g_Cfg.skill2Pos[0]), @"skill2Y": @(g_Cfg.skill2Pos[1]),
             @"skill3X": @(g_Cfg.skill3Pos[0]), @"skill3Y": @(g_Cfg.skill3Pos[1]),
@@ -179,6 +183,10 @@ namespace ConfigStorage {
         if (dict[@"delayAfterS3Ms"]) g_Cfg.delayAfterS3Ms = [dict[@"delayAfterS3Ms"] intValue];
         if (dict[@"delayAfterS1_2Ms"]) g_Cfg.delayAfterS1_2Ms = [dict[@"delayAfterS1_2Ms"] intValue];
 
+        if (dict[@"floatingToggleX"]) g_Cfg.floatingTogglePos[0] = [dict[@"floatingToggleX"] floatValue];
+        if (dict[@"floatingToggleY"]) g_Cfg.floatingTogglePos[1] = [dict[@"floatingToggleY"] floatValue];
+        if (dict[@"menuToggleX"]) g_Cfg.menuTogglePos[0] = [dict[@"menuToggleX"] floatValue];
+        if (dict[@"menuToggleY"]) g_Cfg.menuTogglePos[1] = [dict[@"menuToggleY"] floatValue];
         if (dict[@"skill1X"]) g_Cfg.skill1Pos[0] = [dict[@"skill1X"] floatValue];
         if (dict[@"skill1Y"]) g_Cfg.skill1Pos[1] = [dict[@"skill1Y"] floatValue];
         if (dict[@"skill2X"]) g_Cfg.skill2Pos[0] = [dict[@"skill2X"] floatValue];
@@ -1112,6 +1120,8 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 - (void)syncControlButtonFramesFromConfig {
     CGSize size = self.view.bounds.size;
     const CGFloat d = 42.0f;
+    self.floatingToggleBtn.center = CGPointMake(g_Cfg.floatingTogglePos[0] * size.width, g_Cfg.floatingTogglePos[1] * size.height);
+    self.menuToggleBtn.center = CGPointMake(g_Cfg.menuTogglePos[0] * size.width, g_Cfg.menuTogglePos[1] * size.height);
     self.btnC1.center = CGPointMake(g_Cfg.skill1Pos[0] * size.width, g_Cfg.skill1Pos[1] * size.height);
     self.btnC2.center = CGPointMake(g_Cfg.skill2Pos[0] * size.width, g_Cfg.skill2Pos[1] * size.height);
     self.btnC3.center = CGPointMake(g_Cfg.skill3Pos[0] * size.width, g_Cfg.skill3Pos[1] * size.height);
@@ -1153,6 +1163,9 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 }
 
 - (void)onButtonPan:(UIPanGestureRecognizer *)pan {
+    // Chỉ cho phép sắp xếp vị trí khi menu PX đang mở.
+    if (!g_ShowImGuiMenu) return;
+
     UIView *btn = pan.view;
     CGPoint translation = [pan translationInView:self.view];
     CGPoint newCenter = CGPointMake(btn.center.x + translation.x, btn.center.y + translation.y);
@@ -1167,7 +1180,11 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     // The floating skill controls also define the in-game touch coordinates.
     const float nx = (float)(newCenter.x / MAX(1.0, screen.width));
     const float ny = (float)(newCenter.y / MAX(1.0, screen.height));
-    if (btn == self.btnC1) {
+    if (btn == self.floatingToggleBtn) {
+        g_Cfg.floatingTogglePos[0] = nx; g_Cfg.floatingTogglePos[1] = ny;
+    } else if (btn == self.menuToggleBtn) {
+        g_Cfg.menuTogglePos[0] = nx; g_Cfg.menuTogglePos[1] = ny;
+    } else if (btn == self.btnC1) {
         g_Cfg.skill1Pos[0] = nx; g_Cfg.skill1Pos[1] = ny;
     } else if (btn == self.btnC2) {
         g_Cfg.skill2Pos[0] = nx; g_Cfg.skill2Pos[1] = ny;
@@ -1373,6 +1390,10 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
             }
             ImGui::Text("An/Hien nhanh: Cham 3 ngon 2 lan");
             ImGui::Separator();
+            if (ImGui::Button("Luu Toa Do Nut")) {
+                ConfigStorage::SavePreset("default");
+            }
+            ImGui::SameLine();
             if (ImGui::Button("Luu Default")) ConfigStorage::SavePreset("default");
             ImGui::SameLine();
             if (ImGui::Button("Tai Default")) { ConfigStorage::LoadPreset("default"); [self syncControlButtonFramesFromConfig]; [self updateQuickButtonHighlights]; }
