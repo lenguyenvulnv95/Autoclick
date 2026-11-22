@@ -46,7 +46,7 @@ inline bool IsLevelBadgeAdjacentToBar(float barLeft, float barTop,
 
     const float barCenterY = barTop + barHeight * 0.5f;
     const float badgeCenterY = badgeTop + badgeHeight * 0.5f;
-    const float verticalTolerance = std::max(barHeight * 3.5f, badgeHeight * 1.5f);
+    const float verticalTolerance = std::max(barHeight * 2.0f, badgeHeight * 0.75f);
     return std::fabs(barCenterY - badgeCenterY) <= verticalTolerance;
 }
 
