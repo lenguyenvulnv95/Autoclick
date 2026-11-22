@@ -2,7 +2,7 @@ name: Build Autonak Dylib
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, develop ]
   workflow_dispatch:
 
 jobs:
@@ -67,7 +67,7 @@ jobs:
           imgui/backends/imgui_impl_metal.mm
 
       - name: Upload Autonak.dylib
-        if: steps.compile_dylib.outcome == 'success'
+        if: always() && steps.compile_dylib.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: Autonak.dylib
