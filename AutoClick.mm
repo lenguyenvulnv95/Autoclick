@@ -87,7 +87,7 @@ struct Config {
     bool showQuickComboBtns = true;     // Hiển thị cụm 3 nút C1, C2, C3 trên màn hình
     float uiOpacity = 0.85f;            // Độ mờ nút điều khiển nổi
 
-    int captureFps = 12;                // Tần suất quét CV (10 - 15 FPS)
+    int captureFps = 60;                // Mục tiêu tối đa; FPS thực tế phụ thuộc tốc độ xử lý Vision
     float standardHpWidth = 68.0f;      // Chiều rộng chuẩn 1 thanh máu tướng (px)
     float minHpHeight = 4.0f;           // Chiều cao tối thiểu thanh máu (px)
     float maxHpHeight = 14.0f;          // Chiều cao tối đa thanh máu (px)
@@ -126,6 +126,9 @@ static Config g_Cfg;
 static std::mutex g_StateMutex;
 static std::atomic<float> g_ScreenPointWidth{0.0f};
 static std::atomic<float> g_ScreenPointHeight{0.0f};
+static std::atomic<uint64_t> g_ImGuiFrameCounter{0};
+static std::atomic<uint64_t> g_ImGuiMousePressFrame{0};
+static std::atomic<bool> g_ImGuiMouseReleasePending{false};
 static bool g_ShowImGuiMenu = false;
 
 static CGSize CachedScreenPointSize() {
@@ -1222,7 +1225,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     self.mtkView.clearColor = MTLClearColorMake(0, 0, 0, 0);
     self.mtkView.opaque = NO;
     self.mtkView.delegate = self;
-    self.mtkView.preferredFramesPerSecond = 30;
+    self.mtkView.preferredFramesPerSecond = 60;
     self.mtkView.layer.name = @"PXOverlayLayer";
     [self.view addSubview:self.mtkView];
 
@@ -1490,6 +1493,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     g_ShowImGuiMenu = !g_ShowImGuiMenu;
     if (!g_ShowImGuiMenu) {
         g_ImGuiWindowRect = CGRectZero;
+        g_ImGuiMouseReleasePending.store(false, std::memory_order_release);
         if (self.imguiInitialized && ImGui::GetCurrentContext() != nullptr) {
             ImGuiIO &io = ImGui::GetIO();
             io.AddMouseButtonEvent(0, false);
@@ -1539,9 +1543,15 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     ImGuiIO &io = ImGui::GetIO();
     io.AddMousePosEvent((float)loc.x, (float)loc.y);
     if (phase == UITouchPhaseBegan) {
+        g_ImGuiMousePressFrame.store(
+            g_ImGuiFrameCounter.load(std::memory_order_acquire),
+            std::memory_order_release);
+        g_ImGuiMouseReleasePending.store(false, std::memory_order_release);
         io.AddMouseButtonEvent(0, true);
     } else if (phase == UITouchPhaseEnded || phase == UITouchPhaseCancelled) {
-        io.AddMouseButtonEvent(0, false);
+        // Defer release until the press has been consumed by at least one
+        // ImGui frame; a very short tap must not collapse into one frame.
+        g_ImGuiMouseReleasePending.store(true, std::memory_order_release);
     }
 }
 
@@ -1642,7 +1652,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 
         if (ImGui::BeginTabItem("Vision")) {
             ImGui::Checkbox("Ve khung Debug ESP", &g_Cfg.drawDebugEsp);
-            ImGui::SliderInt("Tan suat quet (FPS)", &g_Cfg.captureFps, 6, 20);
+            ImGui::SliderInt("Tan suat quet (FPS)", &g_Cfg.captureFps, 6, 60);
             ImGui::SliderFloat("Chieu rong HP chuan (px)", &g_Cfg.standardHpWidth, 40.0f, 110.0f, "%.0f");
             ImGui::SliderInt("Temporal Confirm Frames", &g_Cfg.minConfirmFrames, 1, 6);
             ImGui::Separator();
@@ -1771,6 +1781,13 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     if (!encoder) return;
 
     ImGui_ImplMetal_NewFrame(rpd);
+    const uint64_t imguiFrame = g_ImGuiFrameCounter.fetch_add(1, std::memory_order_acq_rel) + 1;
+    const uint64_t pressFrame = g_ImGuiMousePressFrame.load(std::memory_order_acquire);
+    if (g_ImGuiMouseReleasePending.load(std::memory_order_acquire) &&
+        imguiFrame > pressFrame + 1 &&
+        g_ImGuiMouseReleasePending.exchange(false, std::memory_order_acq_rel)) {
+        io.AddMouseButtonEvent(0, false);
+    }
     ImGui::NewFrame();
 
     if (hasEspToDraw) {
