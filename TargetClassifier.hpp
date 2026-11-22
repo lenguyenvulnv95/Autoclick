@@ -58,12 +58,11 @@ inline float Clamp01(float value) {
 // permits provisional tracking on frames where OCR is intentionally skipped.
 inline Classification Classify(const CandidateFeatures& f) {
     if (f.width <= 0.0f || f.height <= 0.0f ||
-        (f.width / f.height) < 4.0f) {
+        (f.width / f.height) < 4.0f || !f.levelBadgePresent) {
         return {TargetKind::Unknown, 0.0f};
     }
 
     const bool reliableLevel =
-        f.levelBadgePresent &&
         HealthBarDetector::IsValidHeroLevel(f.level) &&
         f.levelConfidence >= 0.55f;
 
@@ -74,13 +73,7 @@ inline Classification Classify(const CandidateFeatures& f) {
         return {TargetKind::EnemyHero, confidence};
     }
 
-    if (f.yellowCoverage >= 0.22f) {
-        const float confidence = Clamp01(0.55f + 0.40f * f.yellowCoverage);
-        return {TargetKind::EnemyTower, confidence};
-    }
-
-    if (f.levelBadgePresent && f.redCoverage >= 0.10f &&
-        f.yellowCoverage < 0.10f) {
+    if (f.redCoverage >= 0.10f && f.yellowCoverage < 0.10f) {
         const float confidence = Clamp01(0.50f +
             0.18f * Clamp01(f.redCoverage / 0.35f));
         return {TargetKind::EnemyHero, confidence};
