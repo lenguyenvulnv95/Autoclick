@@ -643,8 +643,11 @@ namespace VisionEngine {
 
         // Detect red hero bars and yellow tower bars separately. Only confirmed
         // or provisional hero observations are allowed into the hero tracker.
+        static std::atomic<uint64_t> frameSequence{0};
+        const bool runLevelOCR =
+            (frameSequence.fetch_add(1, std::memory_order_relaxed) % 4u) == 0u;
         const auto observations = HealthBarSegmenter::Detect(
-            data, texW, texH, stride, scale, rx0, ry0, rx1, ry1);
+            data, texW, texH, stride, scale, rx0, ry0, rx1, ry1, runLevelOCR);
 
         struct RawTarget {
             CGPoint centerPt;
@@ -776,8 +779,9 @@ namespace VisionEngine {
             if (chosenTarget) g_CurrentLockedId = chosenTarget->id;
         }
 
-        if (chosenTarget && g_Cfg.autoEngage &&
-            g_BotState.load() != BotState::EXECUTING) {
+        if (chosenTarget && chosenTarget->level > 0 &&
+            chosenTarget->detectionConfidence >= 0.75f &&
+            g_Cfg.autoEngage && g_BotState.load() != BotState::EXECUTING) {
             g_BotState.store(BotState::LOCKED);
             CGPoint bodyAimPoint = CGPointMake(
                 chosenTarget->center.x, chosenTarget->center.y + 42.0f);
