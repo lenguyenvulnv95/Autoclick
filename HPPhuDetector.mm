@@ -191,6 +191,8 @@ void SubmitBGRA(const unsigned char *pixels, int width, int height, int stride, 
         if (verified.size() >= 12) break;
     }
 
+    SnapshotBatch batch;
+    {
     std::lock_guard<std::mutex> lock(gMutex);
     const float trackDX = std::max(38.0f, width * 0.065f);
     const float trackDY = std::max(28.0f, height * 0.075f);
@@ -260,7 +262,6 @@ void SubmitBGRA(const unsigned char *pixels, int width, int height, int stride, 
     }
 
     gTracks.swap(next);
-    SnapshotBatch batch;
     batch.widthPx = width;
     batch.heightPx = height;
     batch.frameId = ++gFrameCount;
@@ -275,6 +276,7 @@ void SubmitBGRA(const unsigned char *pixels, int width, int height, int stride, 
         snap.missedFrames = t.missed;
         batch.tracks.push_back(snap);
     }
+    } // Release tracker mutex before publishing to the consumer mailbox.
     gMailbox.Publish(std::move(batch));
 
 }
