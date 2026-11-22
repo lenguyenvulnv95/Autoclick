@@ -90,18 +90,24 @@ bool RecognizeLevelFromBGRA(const uint8_t* bgra,
     float bestConfidence = 0.0f;
     int bestLevel = 0;
     for (VNRecognizedTextObservation* observation in request.results) {
-        VNRecognizedText* candidate = [[observation topCandidates:3] firstObject];
-        if (!candidate) continue;
+        // Vision may rank a visually similar but invalid string first (for
+        // example, "I5"). Inspect all returned alternatives so a valid
+        // 1-16 level in candidate #2 or #3 is not discarded.
+        NSArray<VNRecognizedText*>* candidates = [observation topCandidates:3];
+        for (VNRecognizedText* candidate in candidates) {
+            if (!candidate) continue;
 
-        const char* utf8 = candidate.string.UTF8String;
-        if (!utf8) continue;
-        int parsedLevel = 0;
-        if (!ParseLevelText(std::string(utf8), &parsedLevel)) continue;
+            const char* utf8 = candidate.string.UTF8String;
+            if (!utf8) continue;
+            int parsedLevel = 0;
+            if (!ParseLevelText(std::string(utf8), &parsedLevel)) continue;
+            if (!HealthBarDetector::IsValidHeroLevel(parsedLevel)) continue;
 
-        const float confidence = candidate.confidence;
-        if (confidence > bestConfidence) {
-            bestConfidence = confidence;
-            bestLevel = parsedLevel;
+            const float confidence = candidate.confidence;
+            if (confidence > bestConfidence) {
+                bestConfidence = confidence;
+                bestLevel = parsedLevel;
+            }
         }
     }
 
