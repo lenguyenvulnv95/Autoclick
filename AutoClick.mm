@@ -458,10 +458,7 @@ namespace TouchEngine {
         float dx = targetScreenPt.x - playerCenter.x;
         float dy = targetScreenPt.y - playerCenter.y;
         float len = std::hypot(dx, dy);
-        if (len < 2.0f) {
-            TapAt(normSkillPos, 30, token);
-            return;
-        }
+        if (len < 2.0f) return; // Khong co huong muc tieu hop le, khong tu dong tap theo huong nhin.
 
         float dragRadius = 56.0f;
         CGPoint endPt = ApplyJitter(CGPointMake(
@@ -498,10 +495,7 @@ namespace TouchEngine {
         float dx = targetScreenPt.x - playerCenter.x;
         float dy = targetScreenPt.y - playerCenter.y;
         float len = std::hypot(dx, dy);
-        if (len < 2.0f) {
-            TapAt(normSkillPos, 30);
-            return;
-        }
+        if (len < 2.0f) return; // Khong co huong muc tieu hop le, khong tu dong tap S2.
 
         float dragRadius = 58.0f;
         CGPoint endPt = ApplyJitter(CGPointMake(
@@ -538,10 +532,7 @@ namespace TouchEngine {
         float dx = targetScreenPt.x - playerCenter.x;
         float dy = targetScreenPt.y - playerCenter.y;
         float len = std::hypot(dx, dy);
-        if (len < 2.0f) {
-            TapAt(normSkillPos, 30);
-            return;
-        }
+        if (len < 2.0f) return; // Khong co huong muc tieu hop le, khong tu dong tap S2.
 
         float dragRadius = 58.0f;
         CGPoint endPt = ApplyJitter(CGPointMake(
@@ -1285,7 +1276,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 }
 
 - (CGPoint)currentAimPoint {
-    CGPoint aimPt = CGPointMake(self.mtkView.bounds.size.width * 0.5f, self.mtkView.bounds.size.height * 0.5f);
+    CGPoint aimPt = CGPointZero;
     std::lock_guard<std::mutex> lock(g_StateMutex);
     for (const auto& t : g_TrackedTargets) {
         if (t.id == g_CurrentLockedId) {
@@ -1308,9 +1299,15 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
         if ([objc_getAssociatedObject(sender, "isAttackButton") boolValue]) {
             TouchEngine::StartHeldAttack();
         } else {
+            CGPoint target = [self currentAimPoint];
+            if (target.x <= 0.0f && target.y <= 0.0f) {
+                objc_setAssociatedObject(sender, "isActive", @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                [self updateQuickButtonHighlights];
+                return; // Chi bat combo khi da khoa duoc muc tieu.
+            }
             int comboInt = [objc_getAssociatedObject(sender, "comboType") intValue];
             g_Cfg.selectedCombo = (NakComboType)comboInt;
-            TouchEngine::StartHeldCombo([self currentAimPoint], g_Cfg.selectedCombo);
+            TouchEngine::StartHeldCombo(target, g_Cfg.selectedCombo);
         }
     }
     [self updateQuickButtonHighlights];
@@ -1380,6 +1377,9 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     if (hide) {
         g_ShowImGuiMenu = false;
         g_ImGuiWindowRect = CGRectZero;
+        self.skillMarker1.hidden = YES;
+        self.skillMarker2.hidden = YES;
+        self.skillMarker3.hidden = YES;
     }
 }
 
@@ -1407,6 +1407,9 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     if (!ImGui::Begin("PX · Nak Quick Combos", &g_ShowImGuiMenu, ImGuiWindowFlags_NoCollapse)) {
         if (!g_ShowImGuiMenu) {
             g_ImGuiWindowRect = CGRectZero;
+            self.skillMarker1.hidden = YES;
+            self.skillMarker2.hidden = YES;
+            self.skillMarker3.hidden = YES;
         } else {
             ImVec2 pos = ImGui::GetWindowPos();
             ImVec2 size = ImGui::GetWindowSize();
@@ -1418,6 +1421,9 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 
     if (!g_ShowImGuiMenu) {
         g_ImGuiWindowRect = CGRectZero;
+        self.skillMarker1.hidden = YES;
+        self.skillMarker2.hidden = YES;
+        self.skillMarker3.hidden = YES;
         ImGui::End();
         return;
     }
@@ -1473,9 +1479,9 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
         if (ImGui::BeginTabItem("Toa Do Nut")) {
             ImGui::Text("Keo 3 moc tron VANG S1/S2/S3 tren man hinh vao dung vi tri skill trong game.");
             ImGui::TextDisabled("Moc vang chi hien khi menu PX mo; toa do nay duoc dung de cham/vuot skill.");
-            ImGui::SliderFloat2("Chieu 1 (X, Y)", g_Cfg.skill1Pos, 0.5f, 1.0f, "%.2f");
-            ImGui::SliderFloat2("Chieu 2 (X, Y)", g_Cfg.skill2Pos, 0.5f, 1.0f, "%.2f");
-            ImGui::SliderFloat2("Chieu 3 (X, Y)", g_Cfg.skill3Pos, 0.5f, 1.0f, "%.2f");
+            if (ImGui::SliderFloat2("Chieu 1 (X, Y)", g_Cfg.skill1Pos, 0.5f, 1.0f, "%.2f")) [self syncControlButtonFramesFromConfig];
+            if (ImGui::SliderFloat2("Chieu 2 (X, Y)", g_Cfg.skill2Pos, 0.5f, 1.0f, "%.2f")) [self syncControlButtonFramesFromConfig];
+            if (ImGui::SliderFloat2("Chieu 3 (X, Y)", g_Cfg.skill3Pos, 0.5f, 1.0f, "%.2f")) [self syncControlButtonFramesFromConfig];
             ImGui::SliderFloat2("Danh Thuong (X, Y)", g_Cfg.attackPos, 0.5f, 1.0f, "%.2f");
             if (ImGui::Button("Cap nhat vi tri moc vang")) [self syncControlButtonFramesFromConfig];
             ImGui::EndTabItem();
