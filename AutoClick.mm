@@ -132,6 +132,7 @@ static Config GetConfigSnapshot() {
 }
 static std::atomic<float> g_ScreenPointWidth{0.0f};
 static std::atomic<float> g_ScreenPointHeight{0.0f};
+static std::atomic<float> g_ScreenScale{0.0f};
 static std::atomic<uint64_t> g_ScreenMetricsVersion{0};
 static std::atomic<uint64_t> g_ImGuiFrameCounter{0};
 static std::atomic<uint64_t> g_ImGuiMousePressFrame{0};
@@ -149,11 +150,22 @@ static CGSize CachedScreenPointSize() {
     }
 }
 
-static void UpdateCachedScreenPointSize(CGSize size) {
+static CGFloat CachedScreenScale() {
+    for (;;) {
+        const uint64_t before = g_ScreenMetricsVersion.load(std::memory_order_acquire);
+        if (before & 1u) continue;
+        const float scale = g_ScreenScale.load(std::memory_order_relaxed);
+        const uint64_t after = g_ScreenMetricsVersion.load(std::memory_order_acquire);
+        if (before == after) return (CGFloat)scale;
+    }
+}
+
+static void UpdateCachedScreenPointSize(CGSize size, CGFloat scale) {
     if (size.width <= 0.0 || size.height <= 0.0) return;
     g_ScreenMetricsVersion.fetch_add(1, std::memory_order_acq_rel); // odd: write in progress
     g_ScreenPointWidth.store((float)size.width, std::memory_order_relaxed);
     g_ScreenPointHeight.store((float)size.height, std::memory_order_relaxed);
+    g_ScreenScale.store((float)scale, std::memory_order_relaxed);
     g_ScreenMetricsVersion.fetch_add(1, std::memory_order_release); // even: consistent snapshot
 }
 
@@ -1228,7 +1240,9 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor clearColor];
-    UpdateCachedScreenPointSize(self.view.bounds.size);
+    CGFloat initialScreenScale = self.view.window.screen.scale;
+    if (initialScreenScale <= 0.0) initialScreenScale = self.traitCollection.displayScale;
+    UpdateCachedScreenPointSize(self.view.bounds.size, initialScreenScale);
 
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     if (!device) {
@@ -1312,7 +1326,9 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
-    UpdateCachedScreenPointSize(self.view.bounds.size);
+    CGFloat currentScreenScale = self.view.window.screen.scale;
+    if (currentScreenScale <= 0.0) currentScreenScale = self.traitCollection.displayScale;
+    UpdateCachedScreenPointSize(self.view.bounds.size, currentScreenScale);
     [self syncControlButtonFramesFromConfig];
 }
 
@@ -1806,7 +1822,8 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 
     ImGuiIO &io = ImGui::GetIO();
     io.DisplaySize = ImVec2((float)view.bounds.size.width, (float)view.bounds.size.height);
-    float scale = (float)(view.window.screen.scale ?: [UIScreen mainScreen].scale);
+    float scale = (float)CachedScreenScale();
+    if (scale <= 0.0f) scale = (float)view.window.screen.scale;
     io.DisplayFramebufferScale = ImVec2(scale, scale);
 
     id<MTLCommandBuffer> cmdBuf = [self.commandQueue commandBuffer];
