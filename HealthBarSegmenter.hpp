@@ -293,7 +293,10 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
                     if (match) ++columnVotes[(size_t)x];
                 }
             }
-            const int columnVoteThreshold = std::max(1, bandHeight / 2);
+            // Anti-aliased HP fills may not classify as red on half of every
+            // row. One-third vertical support is more tolerant while still
+            // rejecting isolated red noise.
+            const int columnVoteThreshold = std::max(1, (bandHeight + 2) / 3);
             std::vector<std::pair<int, int>> horizontalRuns;
             int runStart = -1;
             int runGap = 0;
@@ -373,7 +376,7 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
                 if (yellowVotes >= std::max(1, bandHeight / 2)) ++yellowColumns;
             }
 
-            const int minVotes = std::max(1, bandHeight / 2);
+            const int minVotes = std::max(1, (bandHeight + 2) / 3);
             const int colorColumns = redMode
                 ? HPAnalyzer::CountRedFillColumns(trackPixels.data(), baseWidth, bandHeight, minVotes)
                 : yellowColumns;
