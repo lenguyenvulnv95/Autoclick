@@ -815,6 +815,7 @@ namespace VisionEngine {
             float widthPt;
             int level;
             float levelConfidence;
+            bool levelOCRAttempted;
             float hpPercent;
             float confidence;
         };
@@ -831,6 +832,7 @@ namespace VisionEngine {
                 observation.width,
                 observation.level,
                 observation.levelConfidence,
+                observation.levelOCRAttempted,
                 observation.hpPercent,
                 observation.confidence
             });
@@ -849,6 +851,14 @@ namespace VisionEngine {
             for (size_t i = 0; i < g_TrackedTargets.size(); ++i) {
                 if (matched[i]) continue;
                 const auto& tracked = g_TrackedTargets[i];
+                // A nearby bar must not inherit a clearly incompatible level
+                // from a different hero's track. One-level upward changes are
+                // allowed to account for normal in-game level progression.
+                if (observation.level > 0 && tracked.level > 0 &&
+                    (observation.level < tracked.level ||
+                     observation.level > tracked.level + 1)) {
+                    continue;
+                }
                 CGPoint predicted = CGPointMake(
                     tracked.center.x + tracked.velocity.x,
                     tracked.center.y + tracked.velocity.y
@@ -871,9 +881,17 @@ namespace VisionEngine {
                 target.center = observation.centerPt;
                 target.width = observation.widthPt;
                 target.targetType = TargetClassifier::TargetKind::EnemyHero;
-                if (observation.level > 0 && observation.levelConfidence >= 0.45f) {
-                    target.level = observation.level;
-                    target.levelConfidence = observation.levelConfidence;
+                if (observation.levelOCRAttempted) {
+                    if (observation.level >= 1 && observation.level <= 16 &&
+                        observation.levelConfidence >= 0.45f) {
+                        target.level = observation.level;
+                        target.levelConfidence = observation.levelConfidence;
+                    } else {
+                        // An attempted but failed OCR read invalidates the
+                        // cached label; never keep a previous hero's level.
+                        target.level = 0;
+                        target.levelConfidence = 0.0f;
+                    }
                 }
                 target.hpPercent = target.consecutiveFrames > 0
                     ? (target.hpPercent * 0.65f + observation.hpPercent * 0.35f)
