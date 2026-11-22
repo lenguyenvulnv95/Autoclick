@@ -211,7 +211,9 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
                                           int roiX1 = -1,
                                           int roiY1 = -1,
                                           bool performLevelOCR = true,
-                                           float standardHpWidthPoints = 68.0f) {
+                                           float standardHpWidthPoints = 68.0f,
+                                           float minHpHeightPoints = 4.0f,
+                                           float maxHpHeightPoints = 14.0f) {
     std::vector<BarObservation> output;
     if (!bgra || width <= 0 || height <= 0 || stride < width * 4) return output;
 
@@ -223,8 +225,11 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
 
     scale = std::max(0.5f, scale);
     const int minRowPixels = std::max(5, (int)std::round(6.0f * scale));
-    const int minBandHeight = std::max(2, (int)std::round(3.0f * scale));
-    const int maxBandHeight = std::max(minBandHeight, (int)std::round(20.0f * scale));
+    const int minBandHeight = std::max(
+        2, (int)std::round(std::max(1.0f, minHpHeightPoints) * scale));
+    const int maxBandHeight = std::max(
+        minBandHeight,
+        (int)std::round(std::max(minHpHeightPoints, maxHpHeightPoints) * scale));
     const int levelSearchWidth = std::max(24, (int)std::round(76.0f * scale));
     const int levelSearchTopPad = (int)std::round(12.0f * scale);
     const int levelSearchHeightPad = (int)std::round(20.0f * scale);
