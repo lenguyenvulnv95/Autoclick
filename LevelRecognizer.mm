@@ -56,7 +56,7 @@ bool RecognizeLevelFromBGRA(const uint8_t* bgra,
     if (!cropImage) return false;
 
     VNRecognizeTextRequest* request = [[VNRecognizeTextRequest alloc] init];
-    request.recognitionLevel = VNRecognizeTextRequestRecognitionLevelAccurate;
+    request.recognitionLevel = VNRequestTextRecognitionLevelAccurate;
     request.usesLanguageCorrection = NO;
     request.minimumTextHeight = 0.015;
     request.recognitionLanguages = @[@"en-US"];
