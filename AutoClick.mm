@@ -126,6 +126,7 @@ static Config g_Cfg;
 static std::recursive_mutex g_ConfigMutex;
 static std::mutex g_StateMutex;
 static std::atomic<bool> g_MasterEnable{false};
+static std::atomic<int> g_CaptureFps{60};
 
 static Config GetConfigSnapshot() {
     std::lock_guard<std::recursive_mutex> lock(g_ConfigMutex);
@@ -210,7 +211,10 @@ namespace ConfigStorage {
         if (dict[@"drawDebugEsp"]) g_Cfg.drawDebugEsp = [dict[@"drawDebugEsp"] boolValue];
         if (dict[@"showQuickComboBtns"]) g_Cfg.showQuickComboBtns = [dict[@"showQuickComboBtns"] boolValue];
         if (dict[@"uiOpacity"]) g_Cfg.uiOpacity = [dict[@"uiOpacity"] floatValue];
-        if (dict[@"captureFps"]) g_Cfg.captureFps = [dict[@"captureFps"] intValue];
+        if (dict[@"captureFps"]) {
+            g_Cfg.captureFps = std::max(6, std::min(60, [dict[@"captureFps"] intValue]));
+        }
+        g_CaptureFps.store(g_Cfg.captureFps, std::memory_order_release);
         if (dict[@"selectedCombo"]) g_Cfg.selectedCombo = (NakComboType)[dict[@"selectedCombo"] intValue];
         if (dict[@"standardHpWidth"]) g_Cfg.standardHpWidth = [dict[@"standardHpWidth"] floatValue];
         if (dict[@"minConfirmFrames"]) g_Cfg.minConfirmFrames = [dict[@"minConfirmFrames"] intValue];
@@ -1010,11 +1014,11 @@ namespace VisionEngine {
     void SubmitMetalTextureAsync(id<MTLTexture> texture,
                                   id<MTLCommandBuffer> commandBuffer) {
         if (!ShouldCapture() || !texture || !commandBuffer) return;
-        const Config cfg = GetConfigSnapshot();
         if (texture.pixelFormat != MTLPixelFormatBGRA8Unorm) return;
 
         const double now = CACurrentMediaTime();
-        const double minInterval = 1.0 / (double)std::max(1, cfg.captureFps);
+        const int captureFps = std::max(1, g_CaptureFps.load(std::memory_order_acquire));
+        const double minInterval = 1.0 / (double)captureFps;
         const double previousFrameTime = g_LastFrameTime.load(std::memory_order_relaxed);
         if ((now - previousFrameTime) < minInterval) return;
         if (g_IsProcessing.exchange(true, std::memory_order_acq_rel)) return;
@@ -1264,7 +1268,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     self.floatingToggleBtn.tag = 999;
     self.floatingToggleBtn.frame = CGRectMake(24, 110, 46, 46);
     self.floatingToggleBtn.layer.cornerRadius = 23;
-    self.floatingToggleBtn.backgroundColor = [UIColor colorWithRed:0.85 green:0.15 blue:0.20 alpha:g_Cfg.uiOpacity];
+    self.floatingToggleBtn.backgroundColor = [UIColor colorWithRed:0.85 green:0.15 blue:0.20 alpha:GetConfigSnapshot().uiOpacity];
     [self.floatingToggleBtn setTitle:@"OFF" forState:UIControlStateNormal];
     self.floatingToggleBtn.titleLabel.font = [UIFont boldSystemFontOfSize:12];
     [self.floatingToggleBtn addTarget:self action:@selector(onToggleBot) forControlEvents:UIControlEventTouchUpInside];
@@ -1275,7 +1279,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     self.menuToggleBtn.tag = 999;
     self.menuToggleBtn.frame = CGRectMake(78, 110, 46, 46);
     self.menuToggleBtn.layer.cornerRadius = 23;
-    self.menuToggleBtn.backgroundColor = [UIColor colorWithRed:0.15 green:0.15 blue:0.20 alpha:g_Cfg.uiOpacity];
+    self.menuToggleBtn.backgroundColor = [UIColor colorWithRed:0.15 green:0.15 blue:0.20 alpha:GetConfigSnapshot().uiOpacity];
     [self.menuToggleBtn setTitle:@"PX" forState:UIControlStateNormal];
     self.menuToggleBtn.titleLabel.font = [UIFont boldSystemFontOfSize:13];
     [self.menuToggleBtn addTarget:self action:@selector(onToggleMenu) forControlEvents:UIControlEventTouchUpInside];
@@ -1370,7 +1374,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     btn.tag = 999;
     btn.frame = frame;
     btn.layer.cornerRadius = 21;
-    btn.backgroundColor = [UIColor colorWithRed:0.20 green:0.20 blue:0.30 alpha:g_Cfg.uiOpacity];
+    btn.backgroundColor = [UIColor colorWithRed:0.20 green:0.20 blue:0.30 alpha:GetConfigSnapshot().uiOpacity];
     [btn setTitle:title forState:UIControlStateNormal];
     btn.titleLabel.font = [UIFont boldSystemFontOfSize:13];
     if ([title isEqualToString:@"AA"]) {
@@ -1679,7 +1683,9 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 
         if (ImGui::BeginTabItem("Vision")) {
             ImGui::Checkbox("Ve khung Debug ESP", &g_Cfg.drawDebugEsp);
-            ImGui::SliderInt("Tan suat quet (FPS)", &g_Cfg.captureFps, 6, 60);
+            if (ImGui::SliderInt("Tan suat quet (FPS)", &g_Cfg.captureFps, 6, 60)) {
+                g_CaptureFps.store(g_Cfg.captureFps, std::memory_order_release);
+            }
             ImGui::SliderFloat("Chieu rong HP chuan (px)", &g_Cfg.standardHpWidth, 40.0f, 110.0f, "%.0f");
             ImGui::SliderInt("Temporal Confirm Frames", &g_Cfg.minConfirmFrames, 1, 6);
             ImGui::Separator();
