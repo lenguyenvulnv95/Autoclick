@@ -17,6 +17,7 @@ struct BarObservation {
     TargetClassifier::TargetKind kind = TargetClassifier::TargetKind::Unknown;
     int level = 0;
     float levelConfidence = 0.0f;
+    bool levelOCRAttempted = false;
     float hpPercent = 0.0f;
     float hpConfidence = 0.0f;
     float confidence = 0.0f;
@@ -207,7 +208,7 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
     const int maxBandHeight = std::max(minBandHeight, (int)std::round(20.0f * scale));
     const int levelSearchWidth = std::max(24, (int)std::round(76.0f * scale));
     const int levelSearchTopPad = (int)std::round(12.0f * scale);
-    const int levelSearchHeightPad = (int)std::round(48.0f * scale);
+    const int levelSearchHeightPad = (int)std::round(20.0f * scale);
 
     std::vector<RowStats> rows((size_t)roiY1);
     for (int y = roiY0; y < roiY1; ++y) {
@@ -392,24 +393,19 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
                     ? std::min(width - cropX, badge.width + cropPadding * 2) : 0;
                 const int cropH = badgeAdjacent
                     ? std::min(height - cropY, badge.height + cropPadding * 2) : 0;
-                bool levelFound = badgeAdjacent && performLevelOCR &&
-                    cropW >= 12 && cropH >= 12 &&
+                const bool canReadBadge = badgeAdjacent && performLevelOCR &&
+                    cropW >= 12 && cropH >= 12;
+                observation.levelOCRAttempted = canReadBadge;
+                const bool levelFound = canReadBadge &&
                     LevelRecognizer::RecognizeLevelFromBGRA(
                         bgra, width, height, stride,
                         (float)cropX, (float)cropY, (float)cropW, (float)cropH,
                         &level, &levelConfidence);
 
-                // If the tight badge crop is too small/partially occluded, retry
-                // inside the same local search window. The adjacent badge check
-                // remains mandatory, and the parser rejects multiple number groups.
-                if (badgeAdjacent && performLevelOCR && !levelFound &&
-                    searchW >= 16 && searchH >= 16) {
-                    levelFound = LevelRecognizer::RecognizeLevelFromBGRA(
-                        bgra, width, height, stride,
-                        (float)searchX, (float)searchY,
-                        (float)searchW, (float)searchH,
-                        &level, &levelConfidence);
-                }
+                // Deliberately do not OCR the entire neighboring search window:
+                // it can include another hero's level badge and transfer that
+                // level to this HP bar. Only the geometrically matched badge crop
+                // is authoritative for this candidate.
 
                 TargetClassifier::CandidateFeatures features;
                 features.width = (float)baseWidth;
