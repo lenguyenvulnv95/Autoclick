@@ -7,6 +7,9 @@
 #include <algorithm>
 #include <cmath>
 #include <vector>
+#include <mutex>
+#include <cstdint>
+#include <utility>
 
 namespace HPPhuBridge {
 struct TrackSnapshot {
@@ -30,6 +33,33 @@ struct Observation {
     float hpPercent = -1.0f; // unknown
     bool hpVerified = false;
     bool enemyHeroVerified = false;
+};
+
+// Thread-safe handoff: the producer copies a snapshot under its own track
+// mutex, releases that mutex, then calls Publish. The consumer reads an
+// independent copy; never hold a detector lock while calling Autoclick.
+struct SnapshotBatch {
+    std::vector<TrackSnapshot> tracks;
+    int widthPx = 0;
+    int heightPx = 0;
+    uint64_t frameId = 0;
+};
+
+class SnapshotMailbox {
+public:
+    void Publish(SnapshotBatch batch) {
+        if (batch.widthPx <= 0 || batch.heightPx <= 0) return;
+        std::lock_guard<std::mutex> guard(mutex_);
+        if (batch.frameId <= latest_.frameId && latest_.frameId != 0) return;
+        latest_ = std::move(batch);
+    }
+    SnapshotBatch Read() const {
+        std::lock_guard<std::mutex> guard(mutex_);
+        return latest_;
+    }
+private:
+    mutable std::mutex mutex_;
+    SnapshotBatch latest_;
 };
 
 inline std::vector<Observation> Convert(
