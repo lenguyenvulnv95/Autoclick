@@ -1321,6 +1321,17 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
                 ImVec2((float)t.center.x + halfW, (float)t.center.y + 8.0f),
                 col, 2.0f, 0, isLocked ? 2.5f : 1.5f
             );
+            char targetLabel[40];
+            if (t.level >= 1 && t.level <= 16) {
+                snprintf(targetLabel, sizeof(targetLabel), "L%02d  HP %.0f%%",
+                         t.level, t.hpPercent);
+            } else {
+                snprintf(targetLabel, sizeof(targetLabel), "L--  HP %.0f%%",
+                         t.hpPercent);
+            }
+            bg->AddText(
+                ImVec2((float)t.center.x - halfW, (float)t.center.y - 25.0f),
+                col, targetLabel);
         }
     }
 
