@@ -1106,6 +1106,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 
     ConfigStorage::LoadPreset("default");
     [self syncControlButtonFramesFromConfig];
+    [self updateQuickButtonHighlights];
 }
 
 - (void)syncControlButtonFramesFromConfig {
@@ -1119,6 +1120,12 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     self.btnC2.bounds = CGRectMake(0, 0, d, d);
     self.btnC3.bounds = CGRectMake(0, 0, d, d);
     self.btnAA.bounds = CGRectMake(0, 0, d, d);
+    self.floatingToggleBtn.alpha = g_Cfg.uiOpacity;
+    self.menuToggleBtn.alpha = g_Cfg.uiOpacity;
+    self.btnC1.alpha = g_Cfg.uiOpacity;
+    self.btnC2.alpha = g_Cfg.uiOpacity;
+    self.btnC3.alpha = g_Cfg.uiOpacity;
+    self.btnAA.alpha = g_Cfg.uiOpacity;
 }
 
 - (UIButton *)createQuickButton:(NSString *)title frame:(CGRect)frame combo:(NakComboType)combo {
