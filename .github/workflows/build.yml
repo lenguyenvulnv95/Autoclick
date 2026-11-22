@@ -36,6 +36,11 @@ jobs:
           clang++ -std=c++17 -Wall -Wextra -Werror -I. tests/TargetSelectorTests.cpp -o /tmp/target-selector-tests
           /tmp/target-selector-tests
 
+      - name: Test HP-phu snapshot bridge
+        run: |
+          clang++ -std=c++17 -Wall -Wextra -Werror -I. -framework CoreGraphics tests/HPPhuBridgeTests.mm -o /tmp/hp-phu-bridge-tests
+          /tmp/hp-phu-bridge-tests
+
       - name: Inspect reference images with Apple Vision OCR
         run: |
           unzip -q Picture.zip -d /tmp/picture-reference
