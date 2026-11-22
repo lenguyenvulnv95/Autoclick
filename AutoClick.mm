@@ -411,15 +411,17 @@ namespace TouchEngine {
         });
     }
 
-    void TapAt(const float normPos[2], int holdMs = 30) {
+    void TapAt(const float normPos[2], int holdMs = 30, uint64_t token = 0) {
         CGSize screen = [UIScreen mainScreen].bounds.size;
         CGPoint pt = ApplyJitter(CGPointMake(normPos[0] * screen.width, normPos[1] * screen.height));
         DispatchTouchEvent(UITouchPhaseBegan, pt, 1);
-        usleep(ApplyDelayJitter(holdMs) * 1000);
-        DispatchTouchEvent(UITouchPhaseEnded, pt, 1);
+        bool keepGoing = token == 0
+            ? (usleep(ApplyDelayJitter(holdMs) * 1000), true)
+            : WaitForHold(token, ApplyDelayJitter(holdMs));
+        DispatchTouchEvent(keepGoing ? UITouchPhaseEnded : UITouchPhaseCancelled, pt, 1);
     }
 
-    void SwipeSkillToward(const float normSkillPos[2], CGPoint targetScreenPt, int swipeDurationMs = 50) {
+    void SwipeSkillToward(const float normSkillPos[2], CGPoint targetScreenPt, int swipeDurationMs = 50, uint64_t token = 0) {
         CGSize screen = [UIScreen mainScreen].bounds.size;
         CGPoint startPt = ApplyJitter(CGPointMake(normSkillPos[0] * screen.width, normSkillPos[1] * screen.height));
         CGPoint playerCenter = CGPointMake(screen.width * 0.5f, screen.height * 0.5f);
@@ -447,13 +449,19 @@ namespace TouchEngine {
                 startPt.x + (endPt.x - startPt.x) * t,
                 startPt.y + (endPt.y - startPt.y) * t
             );
-            usleep(stepDelayUs);
+            bool keepGoing = token == 0
+                ? (usleep(stepDelayUs), true)
+                : WaitForHold(token, std::max(1, stepDelayUs / 1000));
+            if (!keepGoing) {
+                DispatchTouchEvent(UITouchPhaseCancelled, mid, 2);
+                return;
+            }
             DispatchTouchEvent(UITouchPhaseMoved, mid, 2);
         }
         DispatchTouchEvent(UITouchPhaseEnded, endPt, 2);
     }
 
-    void SwipeSkillS2OppositeToward(const float normSkillPos[2], CGPoint targetScreenPt, int swipeDurationMs = 55) {
+    void SwipeSkillS2OppositeToward(const float normSkillPos[2], CGPoint targetScreenPt, int swipeDurationMs = 55, uint64_t token = 0) {
         CGSize screen = [UIScreen mainScreen].bounds.size;
         CGPoint startPt = ApplyJitter(CGPointMake(normSkillPos[0] * screen.width, normSkillPos[1] * screen.height));
         CGPoint playerCenter = CGPointMake(screen.width * 0.5f, screen.height * 0.5f);
@@ -481,13 +489,19 @@ namespace TouchEngine {
                 startPt.x + (endPt.x - startPt.x) * t,
                 startPt.y + (endPt.y - startPt.y) * t
             );
-            usleep(stepDelayUs);
+            bool keepGoing = token == 0
+                ? (usleep(stepDelayUs), true)
+                : WaitForHold(token, std::max(1, stepDelayUs / 1000));
+            if (!keepGoing) {
+                DispatchTouchEvent(UITouchPhaseCancelled, mid, 2);
+                return;
+            }
             DispatchTouchEvent(UITouchPhaseMoved, mid, 2);
         }
         DispatchTouchEvent(UITouchPhaseEnded, endPt, 2);
     }
 
-    void SwipeSkillAwayFrom(const float normSkillPos[2], CGPoint targetScreenPt, int swipeDurationMs = 50) {
+    void SwipeSkillAwayFrom(const float normSkillPos[2], CGPoint targetScreenPt, int swipeDurationMs = 50, uint64_t token = 0) {
         CGSize screen = [UIScreen mainScreen].bounds.size;
         CGPoint startPt = ApplyJitter(CGPointMake(normSkillPos[0] * screen.width, normSkillPos[1] * screen.height));
         CGPoint playerCenter = CGPointMake(screen.width * 0.5f, screen.height * 0.5f);
@@ -515,7 +529,13 @@ namespace TouchEngine {
                 startPt.x + (endPt.x - startPt.x) * t,
                 startPt.y + (endPt.y - startPt.y) * t
             );
-            usleep(stepDelayUs);
+            bool keepGoing = token == 0
+                ? (usleep(stepDelayUs), true)
+                : WaitForHold(token, std::max(1, stepDelayUs / 1000));
+            if (!keepGoing) {
+                DispatchTouchEvent(UITouchPhaseCancelled, mid, 2);
+                return;
+            }
             DispatchTouchEvent(UITouchPhaseMoved, mid, 2);
         }
         DispatchTouchEvent(UITouchPhaseEnded, endPt, 2);
@@ -529,43 +549,43 @@ namespace TouchEngine {
             case NakComboType::GANK_LONG_RANGE:
                 // C1: S2 -> S1 -> S1 -> S3 -> AA
                 if (!active()) return;
-                SwipeSkillS2OppositeToward(g_Cfg.skill2Pos, targetPt, 55);
+                SwipeSkillS2OppositeToward(g_Cfg.skill2Pos, targetPt, 55, token);
                 if (!delay(ApplyDelayJitter(g_Cfg.delayAfterS2Ms))) return;
-                SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50);
+                SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50, token);
                 if (!delay(ApplyDelayJitter(g_Cfg.delayAfterS1_1Ms))) return;
-                SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50);
+                SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50, token);
                 if (!delay(ApplyDelayJitter(g_Cfg.delayAfterS1_2Ms))) return;
-                TapAt(g_Cfg.skill3Pos, 35);
+                TapAt(g_Cfg.skill3Pos, 35, token);
                 if (!delay(ApplyDelayJitter(g_Cfg.delayAfterS3Ms))) return;
-                if (active()) TapAt(g_Cfg.attackPos, 28);
+                if (active()) TapAt(g_Cfg.attackPos, 28, token);
                 break;
 
             case NakComboType::CLOSE_COMBAT:
                 // C2: S1 -> AA -> S3 -> S2 -> AA -> S1
                 if (!active()) return;
-                SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50);
+                SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50, token);
                 if (!delay(ApplyDelayJitter(g_Cfg.delayAfterS1_1Ms))) return;
-                TapAt(g_Cfg.attackPos, 28);
+                TapAt(g_Cfg.attackPos, 28, token);
                 if (!delay(ApplyDelayJitter(g_Cfg.delayAfterEmpAAMs))) return;
-                TapAt(g_Cfg.skill3Pos, 35);
+                TapAt(g_Cfg.skill3Pos, 35, token);
                 if (!delay(ApplyDelayJitter(g_Cfg.delayAfterS3Ms))) return;
-                SwipeSkillS2OppositeToward(g_Cfg.skill2Pos, targetPt, 55);
+                SwipeSkillS2OppositeToward(g_Cfg.skill2Pos, targetPt, 55, token);
                 if (!delay(ApplyDelayJitter(g_Cfg.delayAfterS2Ms))) return;
-                TapAt(g_Cfg.attackPos, 28);
+                TapAt(g_Cfg.attackPos, 28, token);
                 if (!delay(90)) return;
-                if (active()) SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50);
+                if (active()) SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50, token);
                 break;
 
             case NakComboType::POKE_AND_RUN:
                 // C3: S2 -> S1 -> AA -> S1 retreat
                 if (!active()) return;
-                SwipeSkillS2OppositeToward(g_Cfg.skill2Pos, targetPt, 55);
+                SwipeSkillS2OppositeToward(g_Cfg.skill2Pos, targetPt, 55, token);
                 if (!delay(ApplyDelayJitter(g_Cfg.delayAfterS2Ms))) return;
-                SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50);
+                SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50, token);
                 if (!delay(ApplyDelayJitter(g_Cfg.delayAfterS1_1Ms))) return;
-                TapAt(g_Cfg.attackPos, 30);
+                TapAt(g_Cfg.attackPos, 30, token);
                 if (!delay(ApplyDelayJitter(g_Cfg.delayAfterEmpAAMs))) return;
-                if (active()) SwipeSkillAwayFrom(g_Cfg.skill1Pos, targetPt, 50);
+                if (active()) SwipeSkillAwayFrom(g_Cfg.skill1Pos, targetPt, 50, token);
                 break;
         }
     }
