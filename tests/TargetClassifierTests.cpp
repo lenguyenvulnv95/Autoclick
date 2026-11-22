@@ -33,18 +33,25 @@ int main() {
     CandidateFeatures redWithoutLevel = hero;
     redWithoutLevel.levelBadgePresent = false;
     result = TargetClassifier::Classify(redWithoutLevel);
+    assert(result.kind == TargetKind::Unknown); // No readable level or badge shape.
+
+    CandidateFeatures overlappedBadge = hero;
+    overlappedBadge.level = 0;
+    overlappedBadge.levelConfidence = 0.0f;
+    overlappedBadge.levelBadgePresent = true; // Badge outline is still visible.
+    result = TargetClassifier::Classify(overlappedBadge);
     assert(result.kind == TargetKind::EnemyHero);
-    assert(result.confidence < 0.80f); // Provisional: OCR badge is occluded.
+    assert(result.confidence < 0.80f);
 
     CandidateFeatures invalidLevel = hero;
     invalidLevel.level = 17;
     result = TargetClassifier::Classify(invalidLevel);
-    assert(result.kind == TargetKind::EnemyHero); // Invalid OCR falls back to red+shape.
+    assert(result.kind == TargetKind::EnemyHero); // Visible badge shape allows provisional classification.
 
     CandidateFeatures weakOCR = hero;
     weakOCR.levelConfidence = 0.40f;
     result = TargetClassifier::Classify(weakOCR);
-    assert(result.kind == TargetKind::EnemyHero); // Weak OCR is provisional.
+    assert(result.kind == TargetKind::EnemyHero); // Visible badge shape allows provisional classification.
 
     CandidateFeatures lowRedEvidence = hero;
     lowRedEvidence.redCoverage = 0.04f;
@@ -58,6 +65,6 @@ int main() {
     result = TargetClassifier::Classify(badShape);
     assert(result.kind == TargetKind::Unknown);
 
-    std::cout << "TargetClassifier tests: PASS (8 scenarios)\\n";
+    std::cout << "TargetClassifier tests: PASS (9 scenarios)\\n";
     return 0;
 }
