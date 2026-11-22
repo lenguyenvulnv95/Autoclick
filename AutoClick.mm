@@ -430,7 +430,7 @@ namespace TouchEngine {
         float dy = targetScreenPt.y - playerCenter.y;
         float len = std::hypot(dx, dy);
         if (len < 2.0f) {
-            TapAt(normSkillPos, 30);
+            TapAt(normSkillPos, 30, token);
             return;
         }
 
@@ -1180,9 +1180,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     self.btnC1.backgroundColor = stoppedCol;
     self.btnC2.backgroundColor = stoppedCol;
     self.btnC3.backgroundColor = stoppedCol;
-    if (![objc_getAssociatedObject(self.btnAA, "isAttackButton") boolValue]) {
-        self.btnAA.backgroundColor = stoppedCol;
-    }
+    self.btnAA.backgroundColor = stoppedCol;
     self.btnC1.hidden = !g_Cfg.showQuickComboBtns;
     self.btnC2.hidden = !g_Cfg.showQuickComboBtns;
     self.btnC3.hidden = !g_Cfg.showQuickComboBtns;
