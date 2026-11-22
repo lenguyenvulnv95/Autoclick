@@ -6,7 +6,7 @@
 int main(int argc, const char* argv[]) {
     @autoreleasepool {
         if (argc < 2) {
-            fprintf(stderr, "Usage: ReferenceImageOCR image...\\n");
+            fprintf(stderr, "Usage: ReferenceImageOCR image...\n");
             return 2;
         }
         int failures = 0;
@@ -15,14 +15,14 @@ int main(int argc, const char* argv[]) {
             NSURL* url = [NSURL fileURLWithPath:path];
             CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)url, nullptr);
             if (!source) {
-                fprintf(stderr, "UNREADABLE %s\\n", argv[i]);
+                fprintf(stderr, "UNREADABLE %s\n", argv[i]);
                 ++failures;
                 continue;
             }
             CGImageRef image = CGImageSourceCreateImageAtIndex(source, 0, nullptr);
             CFRelease(source);
             if (!image) {
-                fprintf(stderr, "NO_IMAGE %s\\n", argv[i]);
+                fprintf(stderr, "NO_IMAGE %s\n", argv[i]);
                 ++failures;
                 continue;
             }
@@ -38,7 +38,7 @@ int main(int argc, const char* argv[]) {
             CGColorSpaceRelease(rgb);
             if (!bitmap) {
                 CGImageRelease(image);
-                fprintf(stderr, "UPSCALE_FAILED %s\\n", argv[i]);
+                fprintf(stderr, "UPSCALE_FAILED %s\n", argv[i]);
                 ++failures;
                 continue;
             }
@@ -48,7 +48,7 @@ int main(int argc, const char* argv[]) {
             CGContextRelease(bitmap);
             CGImageRelease(image);
             if (!scaledImage) {
-                fprintf(stderr, "UPSCALE_IMAGE_FAILED %s\\n", argv[i]);
+                fprintf(stderr, "UPSCALE_IMAGE_FAILED %s\n", argv[i]);
                 ++failures;
                 continue;
             }
@@ -64,10 +64,10 @@ int main(int argc, const char* argv[]) {
             NSError* error = nil;
             BOOL ok = [handler performRequests:@[request] error:&error];
             CGImageRelease(scaledImage);
-            printf("IMAGE %s %zux%zu\\n", argv[i], width, height);
+            printf("IMAGE %s %zux%zu\n", argv[i], width, height);
 
             if (!ok || error) {
-                fprintf(stderr, "OCR_ERROR %s %s\\n", argv[i],
+                fprintf(stderr, "OCR_ERROR %s %s\n", argv[i],
                         error.localizedDescription.UTF8String ?: "unknown");
                 ++failures;
             } else {
@@ -75,13 +75,12 @@ int main(int argc, const char* argv[]) {
                     VNRecognizedText* candidate = [[observation topCandidates:1] firstObject];
                     if (!candidate) continue;
                     CGRect box = observation.boundingBox;
-                    printf("TEXT %s conf=%.3f box=%.3f,%.3f,%.3f,%.3f\\n",
+                    printf("TEXT %s conf=%.3f box=%.3f,%.3f,%.3f,%.3f\n",
                            candidate.string.UTF8String ?: "",
                            candidate.confidence, box.origin.x, box.origin.y,
                            box.size.width, box.size.height);
                 }
             }
-            CGImageRelease(image);
         }
         return failures == 0 ? 0 : 1;
     }
