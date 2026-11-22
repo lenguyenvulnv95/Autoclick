@@ -81,7 +81,6 @@ enum class NakComboType {
 struct Config {
     bool masterEnable = false;          // Công tắc tổng (mặc định tắt)
     bool autoEngage = false;            // Tự động kích hoạt combo khi khóa mục tiêu
-    bool targetQueueEnable = false;     // Khóa tuần tự 5 mục tiêu A -> E
     bool drawDebugEsp = true;           // Vẽ khung nhận diện thanh máu & mục tiêu lock
     bool showQuickComboBtns = true;     // Hiển thị cụm 3 nút C1, C2, C3 trên màn hình
     float uiOpacity = 0.85f;            // Độ mờ nút điều khiển nổi
@@ -164,7 +163,6 @@ namespace ConfigStorage {
         std::lock_guard<std::recursive_mutex> configLock(g_ConfigMutex);
         NSDictionary *dict = @{
             @"autoEngage": @(g_Cfg.autoEngage),
-            @"targetQueueEnable": @(g_Cfg.targetQueueEnable),
             @"drawDebugEsp": @(g_Cfg.drawDebugEsp),
             @"showQuickComboBtns": @(g_Cfg.showQuickComboBtns),
             @"uiOpacity": @(g_Cfg.uiOpacity),
@@ -206,7 +204,6 @@ namespace ConfigStorage {
         if (![dict isKindOfClass:[NSDictionary class]]) return;
 
         if (dict[@"autoEngage"]) g_Cfg.autoEngage = [dict[@"autoEngage"] boolValue];
-        if (dict[@"targetQueueEnable"]) g_Cfg.targetQueueEnable = [dict[@"targetQueueEnable"] boolValue];
         if (dict[@"drawDebugEsp"]) g_Cfg.drawDebugEsp = [dict[@"drawDebugEsp"] boolValue];
         if (dict[@"showQuickComboBtns"]) g_Cfg.showQuickComboBtns = [dict[@"showQuickComboBtns"] boolValue];
         if (dict[@"uiOpacity"]) g_Cfg.uiOpacity = [dict[@"uiOpacity"] floatValue];
@@ -260,7 +257,6 @@ struct TrackedTarget {
     float width = 0.0f;
     int consecutiveFrames = 0;
     int missingFrames = 0;
-    int queueSlot = -1;
     TargetClassifier::TargetKind targetType = TargetClassifier::TargetKind::Unknown;
     int level = 0;
     float levelConfidence = 0.0f;
@@ -769,7 +765,8 @@ namespace VisionEngine {
             (frameSequence.fetch_add(1, std::memory_order_relaxed) % 4u) == 0u;
         auto observations = HealthBarSegmenter::Detect(
             data, texW, texH, stride, detectorScale, rx0, ry0, rx1, ry1,
-            runLevelOCR, cfg.standardHpWidth);
+            runLevelOCR, cfg.standardHpWidth,
+            cfg.minHpHeight, cfg.maxHpHeight);
 
         // Convert the detector's isotropic point estimate with the actual
         // horizontal and vertical drawable-to-view scales independently.
@@ -885,7 +882,6 @@ namespace VisionEngine {
                 newTarget.width = observation.widthPt;
                 newTarget.consecutiveFrames = 1;
                 newTarget.missingFrames = 0;
-                newTarget.queueSlot = -1;
                 newTarget.targetType = TargetClassifier::TargetKind::EnemyHero;
                 newTarget.level = observation.level;
                 newTarget.levelConfidence = observation.levelConfidence;
