@@ -296,6 +296,8 @@ static std::atomic<BotState> g_BotState{BotState::IDLE};
 static std::vector<TrackedTarget> g_TrackedTargets;
 static int g_CurrentLockedId = -1;
 static std::atomic<float> g_VisionMeasuredFps{0.0f};
+static constexpr int kMaxTrackedMissingFrames = 8;
+static constexpr float kMinVerifiedTargetConfidence = 0.65f;
 
 // ============================================================================
 // BỘ TỔNG HỢP CHẠM & VUỐT (IOHIDEVENT + UNITY VIEW TARGETING + NAK COMBOS)
@@ -313,6 +315,20 @@ namespace TouchEngine {
     static dispatch_queue_t g_ActionQueue =
         dispatch_queue_create("com.px.touch.actions", DISPATCH_QUEUE_SERIAL);
     static thread_local std::mt19937 rng(std::random_device{}());
+    static std::atomic<int> g_LastComboType{0};
+    static std::atomic<int> g_LastComboStep{0};
+    // 0=idle, 1=running, 2=completed, 3=cancelled.
+    static std::atomic<int> g_LastComboStatus{0};
+
+    enum ComboStep {
+        COMBO_STEP_NONE = 0,
+        COMBO_STEP_S2_OPPOSITE,
+        COMBO_STEP_S1_TOWARD_1,
+        COMBO_STEP_S1_TOWARD_2,
+        COMBO_STEP_S3,
+        COMBO_STEP_AA,
+        COMBO_STEP_S1_AWAY
+    };
 
     bool ActionIsActive(uint64_t token) {
         return token != 0 &&
@@ -336,6 +352,9 @@ namespace TouchEngine {
         if (!g_MasterEnable.load(std::memory_order_acquire)) return 0;
 
         // A deliberate press-and-hold takes ownership from Auto-Engage.
+        if (g_ActionMode.load(std::memory_order_acquire) != ActionMode::NONE) {
+            g_LastComboStatus.store(3, std::memory_order_release);
+        }
         const uint64_t token = g_ActionGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
         g_ActionMode.store(ActionMode::HELD, std::memory_order_release);
         g_BotState.store(BotState::EXECUTING, std::memory_order_release);
@@ -674,46 +693,71 @@ namespace TouchEngine {
         const Config cfg = GetConfigSnapshot();
         auto active = [&]() { return ActionIsActive(token); };
         auto delay = [&](int ms) { return WaitForAction(token, ms); };
+        auto markStep = [&](ComboStep step) {
+            g_LastComboStep.store((int)step, std::memory_order_release);
+        };
+
+        if (!active()) return;
+        g_LastComboType.store((int)comboType, std::memory_order_release);
+        g_LastComboStep.store(COMBO_STEP_NONE, std::memory_order_release);
+        g_LastComboStatus.store(1, std::memory_order_release);
 
         switch (comboType) {
             case NakComboType::GANK_LONG_RANGE:
                 // C1 — Gank tầm xa: S2 ngược hướng mục tiêu -> S1 hướng mục tiêu -> S1 hướng mục tiêu -> S3 -> AA
-                if (!active()) return;
+                markStep(COMBO_STEP_S2_OPPOSITE);
                 SwipeSkillS2OppositeToward(cfg.skill2Pos, targetPt, 55, token);
                 if (!delay(ApplyDelayJitter(cfg.delayAfterS2Ms))) return;
+                markStep(COMBO_STEP_S1_TOWARD_1);
                 SwipeSkillToward(cfg.skill1Pos, targetPt, 50, token);
                 if (!delay(ApplyDelayJitter(cfg.delayAfterS1_1Ms))) return;
+                markStep(COMBO_STEP_S1_TOWARD_2);
                 SwipeSkillToward(cfg.skill1Pos, targetPt, 50, token);
                 if (!delay(ApplyDelayJitter(cfg.delayAfterS1_2Ms))) return;
+                markStep(COMBO_STEP_S3);
                 TapAt(cfg.skill3Pos, 35, token);
                 if (!delay(ApplyDelayJitter(cfg.delayAfterS3Ms))) return;
-                if (active()) TapAt(cfg.attackPos, 28, token);
+                if (active()) {
+                    markStep(COMBO_STEP_AA);
+                    TapAt(cfg.attackPos, 28, token);
+                }
                 break;
 
             case NakComboType::CLOSE_COMBAT:
                 // C2 — Cận chiến: S1 hướng mục tiêu -> AA -> S3 -> S2 ngược hướng mục tiêu
-                if (!active()) return;
+                markStep(COMBO_STEP_S1_TOWARD_1);
                 SwipeSkillToward(cfg.skill1Pos, targetPt, 50, token);
                 if (!delay(ApplyDelayJitter(cfg.delayAfterS1_1Ms))) return;
+                markStep(COMBO_STEP_AA);
                 TapAt(cfg.attackPos, 28, token);
                 if (!delay(ApplyDelayJitter(cfg.delayAfterEmpAAMs))) return;
+                markStep(COMBO_STEP_S3);
                 TapAt(cfg.skill3Pos, 35, token);
                 if (!delay(ApplyDelayJitter(cfg.delayAfterS3Ms))) return;
-                if (active()) SwipeSkillS2OppositeToward(cfg.skill2Pos, targetPt, 55, token);
+                if (active()) {
+                    markStep(COMBO_STEP_S2_OPPOSITE);
+                    SwipeSkillS2OppositeToward(cfg.skill2Pos, targetPt, 55, token);
+                }
                 break;
 
             case NakComboType::POKE_AND_RUN:
                 // C3 — Cấu rỉa rồi rút lui: S2 -> S1 hướng mục tiêu -> AA -> S1 ngược hướng mục tiêu
-                if (!active()) return;
+                markStep(COMBO_STEP_S2_OPPOSITE);
                 SwipeSkillS2OppositeToward(cfg.skill2Pos, targetPt, 55, token);
                 if (!delay(ApplyDelayJitter(cfg.delayAfterS2Ms))) return;
+                markStep(COMBO_STEP_S1_TOWARD_1);
                 SwipeSkillToward(cfg.skill1Pos, targetPt, 50, token);
                 if (!delay(ApplyDelayJitter(cfg.delayAfterS1_1Ms))) return;
+                markStep(COMBO_STEP_AA);
                 TapAt(cfg.attackPos, 30, token);
                 if (!delay(ApplyDelayJitter(cfg.delayAfterEmpAAMs))) return;
-                if (active()) SwipeSkillAwayFrom(cfg.skill1Pos, targetPt, 50, token);
+                if (active()) {
+                    markStep(COMBO_STEP_S1_AWAY);
+                    SwipeSkillAwayFrom(cfg.skill1Pos, targetPt, 50, token);
+                }
                 break;
         }
+        if (active()) g_LastComboStatus.store(2, std::memory_order_release);
     }
 
     void StartHeldComboForTarget(int targetId, NakComboType comboType) {
@@ -729,7 +773,7 @@ namespace TouchEngine {
                     if (activeTargetId < 0) activeTargetId = g_CurrentLockedId;
                     for (const auto& target : g_TrackedTargets) {
                         if (activeTargetId >= 0 && target.id == activeTargetId &&
-                            target.missingFrames <= 4 &&
+                            target.missingFrames <= kMaxTrackedMissingFrames &&
                             target.targetType == TargetClassifier::TargetKind::EnemyHero) {
                             targetPt = CGPointMake(target.center.x, target.center.y + 42.0f);
                             targetPresent = true;
@@ -752,6 +796,9 @@ namespace TouchEngine {
 
     void StopAllActions() {
         std::lock_guard<std::mutex> lock(g_ActionMutex);
+        if (g_ActionMode.load(std::memory_order_acquire) != ActionMode::NONE) {
+            g_LastComboStatus.store(3, std::memory_order_release);
+        }
         g_ActionGeneration.fetch_add(1, std::memory_order_acq_rel);
         g_ActionMode.store(ActionMode::NONE, std::memory_order_release);
         g_BotState.store(g_MasterEnable.load(std::memory_order_acquire)
@@ -764,6 +811,7 @@ namespace TouchEngine {
         std::lock_guard<std::mutex> lock(g_ActionMutex);
         if (g_ActionMode.load(std::memory_order_acquire) != ActionMode::HELD) return;
 
+        g_LastComboStatus.store(3, std::memory_order_release);
         g_ActionGeneration.fetch_add(1, std::memory_order_acq_rel);
         g_ActionMode.store(ActionMode::NONE, std::memory_order_release);
         g_BotState.store(g_MasterEnable.load(std::memory_order_acquire)
@@ -801,6 +849,8 @@ namespace VisionEngine {
     static std::atomic<int> g_HPPhuObservedBars{0};
     static std::atomic<uint64_t> g_HPPhuLastFrameId{0};
     static std::atomic<int> g_HPPhuMatchedVerified{0};
+    static std::atomic<bool> g_LastScanWasFullScreen{false};
+    static std::atomic<bool> g_LastScanRanOCR{false};
     // Auto-Engage gate telemetry: 0=waiting, 1=disabled, 2=no verified target,
     // 3=level missing, 4=confidence low, 5=combo executing, 6=ready.
     static std::atomic<int> g_AutoEngageGate{0};
@@ -851,17 +901,19 @@ namespace VisionEngine {
 
         const Config cfg = GetConfigSnapshot();
         const float detectorScale = std::sqrt(scaleX * scaleY);
-        // HP-phu always scans the entire BGRA frame. Periodically refresh
-        // the legacy verifier across the full screen as well; in intervening
-        // frames, restrict verification to the union of HP-phu candidates.
-        // This avoids a permanent center-only blind spot without performing
-        // full-screen OCR every frame.
+        // HP-phu always scans the entire BGRA frame. The legacy verifier scans
+        // the full screen more aggressively while no level has been verified,
+        // then falls back to candidate-guided ROIs plus periodic full refreshes.
         static std::atomic<uint64_t> frameSequence{0};
         const uint64_t scanFrame = frameSequence.fetch_add(1, std::memory_order_relaxed);
         const bool requestedFullScan =
             g_FullScreenScanFrames.exchange(0, std::memory_order_acq_rel) > 0;
         const bool periodicFullScan = (scanFrame % 6u) == 0u;
-        const bool fullScreenScan = requestedFullScan || periodicFullScan;
+        const bool recoveryFullScan =
+            g_LegacyLevelVerified.load(std::memory_order_acquire) == 0 &&
+            (scanFrame % 2u) == 0u;
+        const bool fullScreenScan =
+            requestedFullScan || periodicFullScan || recoveryFullScan;
         int rx0 = (int)(cfg.mainScanRoi[0] * texW);
         int ry0 = (int)(cfg.mainScanRoi[1] * texH);
         int rx1 = std::min(texW, (int)((cfg.mainScanRoi[0] + cfg.mainScanRoi[2]) * texW));
@@ -900,7 +952,9 @@ namespace VisionEngine {
 
         // The legacy verifier is the only source of hero/level/HP identity.
         // HP-phu detection alone must never authorize a combo.
-        const bool runLevelOCR = (scanFrame % 4u) == 0u;
+        const bool runLevelOCR = requestedFullScan || (scanFrame % 4u) == 0u;
+        g_LastScanWasFullScreen.store(fullScreenScan, std::memory_order_release);
+        g_LastScanRanOCR.store(runLevelOCR, std::memory_order_release);
         auto observations = HealthBarSegmenter::Detect(
             data, texW, texH, stride, detectorScale, rx0, ry0, rx1, ry1,
             runLevelOCR, cfg.standardHpWidth,
@@ -952,7 +1006,7 @@ namespace VisionEngine {
         for (const auto& target : detectedTargets) {
             if (target.level < 1 || target.level > 16 ||
                 target.levelConfidence < 0.45f ||
-                target.confidence < 0.75f) continue;
+                target.confidence < kMinVerifiedTargetConfidence) continue;
             for (const auto& bar : hpBars) {
                 const float dx = (float)(target.centerPt.x - bar.barCenterPt.x);
                 const float dy = (float)(target.centerPt.y - bar.barCenterPt.y);
@@ -976,6 +1030,14 @@ namespace VisionEngine {
         std::lock_guard<std::mutex> lock(g_StateMutex);
         for (auto& target : g_TrackedTargets) {
             target.missingFrames++;
+            if (target.missingFrames <= 2) {
+                target.center.x += target.velocity.x;
+                target.center.y += target.velocity.y;
+                target.velocity.x *= 0.6f;
+                target.velocity.y *= 0.6f;
+            } else {
+                target.velocity = CGPointZero;
+            }
         }
 
         std::vector<bool> matched(g_TrackedTargets.size(), false);
@@ -1061,7 +1123,7 @@ namespace VisionEngine {
         g_TrackedTargets.erase(
             std::remove_if(g_TrackedTargets.begin(), g_TrackedTargets.end(),
                 [](const TrackedTarget& target) {
-                    if (target.missingFrames > 4) {
+                    if (target.missingFrames > kMaxTrackedMissingFrames) {
                         if (target.id == g_CurrentLockedId) g_CurrentLockedId = -1;
                         return true;
                     }
@@ -1092,7 +1154,7 @@ namespace VisionEngine {
         const int selectedIndex = TargetSelector::SelectLowestHP(
             selectionCandidates,
             cfg.minConfirmFrames,
-            0.75f,
+            kMinVerifiedTargetConfidence,
             g_CurrentLockedId,
             1.0f);
         TrackedTarget* chosenTarget = selectedIndex >= 0
@@ -1105,11 +1167,11 @@ namespace VisionEngine {
         const int engageGate = !cfg.masterEnable || !cfg.autoEngage ? 1 :
             !chosenTarget ? 2 :
             chosenTarget->level <= 0 ? 3 :
-            chosenTarget->detectionConfidence < 0.75f ? 4 :
+            chosenTarget->detectionConfidence < kMinVerifiedTargetConfidence ? 4 :
             g_BotState.load() == BotState::EXECUTING ? 5 : 6;
         g_AutoEngageGate.store(engageGate, std::memory_order_release);
         if (chosenTarget && chosenTarget->level > 0 &&
-            chosenTarget->detectionConfidence >= 0.75f &&
+            chosenTarget->detectionConfidence >= kMinVerifiedTargetConfidence &&
             cfg.masterEnable && cfg.autoEngage &&
             g_BotState.load() != BotState::EXECUTING &&
             !TouchEngine::IsHeldActionActive()) {
@@ -1887,6 +1949,11 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
                         g_Cfg.autoEngage ? "ON" : "OFF");
             ImGui::Text("Vision FPS (processed): %.1f",
                         g_VisionMeasuredFps.load(std::memory_order_relaxed));
+            ImGui::Text("Scan: %s | OCR: %s",
+                        VisionEngine::g_LastScanWasFullScreen.load(std::memory_order_acquire)
+                            ? "FULL" : "ROI",
+                        VisionEngine::g_LastScanRanOCR.load(std::memory_order_acquire)
+                            ? "ON" : "OFF");
 
             std::vector<TrackedTarget> monitorTargets;
             int lockedTargetId = -1;
@@ -1908,10 +1975,24 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
             const char* gateText = gate == 1 ? "Auto-Engage OFF" :
                 gate == 2 ? "No confirmed selectable target" :
                 gate == 3 ? "Target level missing" :
-                gate == 4 ? "Target confidence below 0.75" :
+                gate == 4 ? "Target confidence below 0.65" :
                 gate == 5 ? "Combo already executing" :
                 gate == 6 ? "Ready / trigger requested" : "Waiting for frame";
             ImGui::Text("Auto-Engage gate: %s", gateText);
+            const int comboType = TouchEngine::g_LastComboType.load(std::memory_order_acquire);
+            const int comboStep = TouchEngine::g_LastComboStep.load(std::memory_order_acquire);
+            const int comboStatus = TouchEngine::g_LastComboStatus.load(std::memory_order_acquire);
+            const char* comboStatusText = comboStatus == 1 ? "RUNNING" :
+                comboStatus == 2 ? "COMPLETED" :
+                comboStatus == 3 ? "CANCELLED" : "IDLE";
+            const char* comboStepText = comboStep == TouchEngine::COMBO_STEP_S2_OPPOSITE ? "S2 opposite" :
+                comboStep == TouchEngine::COMBO_STEP_S1_TOWARD_1 ? "S1 toward #1" :
+                comboStep == TouchEngine::COMBO_STEP_S1_TOWARD_2 ? "S1 toward #2" :
+                comboStep == TouchEngine::COMBO_STEP_S3 ? "S3" :
+                comboStep == TouchEngine::COMBO_STEP_AA ? "AA" :
+                comboStep == TouchEngine::COMBO_STEP_S1_AWAY ? "S1 away" : "none";
+            ImGui::Text("Last combo: C%d | %s | Step: %s",
+                        comboType, comboStatusText, comboStepText);
             ImGui::Text("Tracked targets: %d | Locked ID: %d",
                         (int)monitorTargets.size(), lockedTargetId);
             ImGui::Separator();
@@ -1971,15 +2052,17 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 - (void)drawInMTKView:(MTKView *)view {
     const Config cfg = GetConfigSnapshot();
     bool hasEspToDraw = false;
-    std::vector<HPPhuBridge::Observation> hpEspBars;
     if (cfg.masterEnable && cfg.drawDebugEsp) {
-        {
-            std::lock_guard<std::mutex> lock(VisionEngine::g_HPPhuEspMutex);
-            if (CACurrentMediaTime() - VisionEngine::g_HPPhuEspTimestamp <= 0.35)
-                hpEspBars = VisionEngine::g_HPPhuEspBars;
-        }
         std::lock_guard<std::mutex> lock(g_StateMutex);
-        hasEspToDraw = !g_TrackedTargets.empty() || !hpEspBars.empty();
+        hasEspToDraw = std::any_of(
+            g_TrackedTargets.begin(), g_TrackedTargets.end(),
+            [&](const TrackedTarget& target) {
+                return target.level >= 1 && target.level <= 16 &&
+                       target.levelConfidence >= 0.45f &&
+                       target.detectionConfidence >= kMinVerifiedTargetConfidence &&
+                       target.consecutiveFrames >= cfg.minConfirmFrames &&
+                       target.missingFrames <= kMaxTrackedMissingFrames;
+            });
     }
 
     if (!self.imguiInitialized || ImGui::GetCurrentContext() == nullptr || !self.commandQueue || !view.device) return;
@@ -2023,20 +2106,13 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 
     if (hasEspToDraw) {
         ImDrawList *bg = ImGui::GetBackgroundDrawList();
-        // Cyan: HP-phu detection only. This is NOT a verified enemy hero.
-        // Do not route these unverified rectangles to the combo selector.
-        for (const auto& bar : hpEspBars) {
-            if (bar.missedFrames != 0) continue;
-            const CGRect r = bar.barRectPt;
-            bg->AddRect(ImVec2((float)CGRectGetMinX(r), (float)CGRectGetMinY(r)),
-                        ImVec2((float)CGRectGetMaxX(r), (float)CGRectGetMaxY(r)),
-                        IM_COL32(40, 210, 255, 220), 1.0f, 0, 1.5f);
-            bg->AddText(ImVec2((float)CGRectGetMinX(r), (float)CGRectGetMinY(r) - 16.0f),
-                        IM_COL32(40, 210, 255, 220), "HP-phu");
-        }
         std::lock_guard<std::mutex> lock(g_StateMutex);
         for (const auto& t : g_TrackedTargets) {
-            if (t.consecutiveFrames < cfg.minConfirmFrames) continue;
+            if (t.level < 1 || t.level > 16 ||
+                t.levelConfidence < 0.45f ||
+                t.detectionConfidence < kMinVerifiedTargetConfidence ||
+                t.consecutiveFrames < cfg.minConfirmFrames ||
+                t.missingFrames > kMaxTrackedMissingFrames) continue;
             bool isLocked = (t.id == g_CurrentLockedId);
             ImU32 col = isLocked ? IM_COL32(255, 50, 50, 230) : IM_COL32(255, 210, 40, 190);
             float halfW = t.width * 0.5f;
