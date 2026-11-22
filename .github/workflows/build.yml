@@ -41,11 +41,24 @@ jobs:
           clang++ -std=c++17 -Wall -Wextra -Werror -I. -framework CoreGraphics tests/HPPhuBridgeTests.mm -o /tmp/hp-phu-bridge-tests
           /tmp/hp-phu-bridge-tests
 
-      - name: Inspect reference images with Apple Vision OCR
+      - name: Prepare reference images
         run: |
           unzip -q Picture.zip -d /tmp/picture-reference
+
+      - name: Test HP-phu detector on reference images
+        run: |
+          clang++ -std=c++17 -fobjc-arc -Wall -Wextra -I. -framework Foundation -framework ImageIO -framework CoreGraphics tests/HPPhuReferenceTests.mm HPPhuDetector.mm -o /tmp/hp-phu-reference-tests
+          find /tmp/picture-reference -type f -print0 | xargs -0 /tmp/hp-phu-reference-tests
+
+      - name: Test level OCR independently
+        run: |
           clang++ -std=c++17 -fobjc-arc -I. -framework Foundation -framework Vision -framework ImageIO -framework CoreGraphics tests/ReferenceImageOCR.mm LevelRecognizer.mm -o /tmp/reference-image-ocr
           find /tmp/picture-reference -type f -print0 | xargs -0 /tmp/reference-image-ocr
+
+      - name: Diagnose legacy segmentation (non-blocking)
+        continue-on-error: true
+        run: |
+          find /tmp/picture-reference -type f -print0 | xargs -0 /tmp/reference-image-ocr --legacy-segmentation
 
       - name: Preserve reference dataset for visual calibration
         uses: actions/upload-artifact@v4
