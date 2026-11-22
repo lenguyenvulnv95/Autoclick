@@ -1142,6 +1142,19 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 
     btn.center = newCenter;
     [pan setTranslation:CGPointZero inView:self.view];
+
+    // The floating skill controls also define the in-game touch coordinates.
+    const float nx = (float)(newCenter.x / MAX(1.0, screen.width));
+    const float ny = (float)(newCenter.y / MAX(1.0, screen.height));
+    if (btn == self.btnC1) {
+        g_Cfg.skill1Pos[0] = nx; g_Cfg.skill1Pos[1] = ny;
+    } else if (btn == self.btnC2) {
+        g_Cfg.skill2Pos[0] = nx; g_Cfg.skill2Pos[1] = ny;
+    } else if (btn == self.btnC3) {
+        g_Cfg.skill3Pos[0] = nx; g_Cfg.skill3Pos[1] = ny;
+    } else if (btn == self.btnAA) {
+        g_Cfg.attackPos[0] = nx; g_Cfg.attackPos[1] = ny;
+    }
 }
 
 - (CGPoint)currentAimPoint {
