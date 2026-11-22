@@ -124,7 +124,21 @@ struct Config {
 
 static Config g_Cfg;
 static std::mutex g_StateMutex;
+static std::atomic<float> g_ScreenPointWidth{0.0f};
+static std::atomic<float> g_ScreenPointHeight{0.0f};
 static bool g_ShowImGuiMenu = false;
+
+static CGSize CachedScreenPointSize() {
+    return CGSizeMake(
+        (CGFloat)g_ScreenPointWidth.load(std::memory_order_acquire),
+        (CGFloat)g_ScreenPointHeight.load(std::memory_order_acquire));
+}
+
+static void UpdateCachedScreenPointSize(CGSize size) {
+    if (size.width <= 0.0 || size.height <= 0.0) return;
+    g_ScreenPointWidth.store((float)size.width, std::memory_order_release);
+    g_ScreenPointHeight.store((float)size.height, std::memory_order_release);
+}
 
 // ============================================================================
 // LƯU / TẢI CẤU HÌNH JSON VÀO DOCUMENTS
@@ -321,7 +335,8 @@ namespace TouchEngine {
 
     IOHIDEventRef CreateTouchHIDEvent(UITouchPhase phase, CGPoint point, NSInteger fingerId) {
         uint64_t machTime = mach_absolute_time();
-        CGSize screen = [UIScreen mainScreen].bounds.size;
+        CGSize screen = CachedScreenPointSize();
+        if (screen.width <= 0.0 || screen.height <= 0.0) return nullptr;
         float normX = (float)(point.x / std::max(1.0, screen.width));
         float normY = (float)(point.y / std::max(1.0, screen.height));
 
@@ -356,7 +371,7 @@ namespace TouchEngine {
     }
 
     void DispatchTouchEvent(UITouchPhase phase, CGPoint point, NSInteger fingerId) {
-        dispatch_sync(dispatch_get_main_queue(), ^{
+        void (^dispatchBlock)(void) = ^{
             if (!g_ActiveTouches) g_ActiveTouches = [NSMutableDictionary dictionary];
 
             UIView *targetView = nil;
@@ -440,11 +455,18 @@ namespace TouchEngine {
             if (phase == UITouchPhaseEnded || phase == UITouchPhaseCancelled) {
                 [g_ActiveTouches removeObjectForKey:key];
             }
-        });
+        };
+
+        if ([NSThread isMainThread]) {
+            dispatchBlock();
+        } else {
+            dispatch_sync(dispatch_get_main_queue(), dispatchBlock);
+        }
     }
 
     void TapAt(const float normPos[2], int holdMs = 30, uint64_t token = 0) {
-        CGSize screen = [UIScreen mainScreen].bounds.size;
+        CGSize screen = CachedScreenPointSize();
+        if (screen.width <= 0.0 || screen.height <= 0.0) return;
         CGPoint pt = ApplyJitter(CGPointMake(normPos[0] * screen.width, normPos[1] * screen.height));
         DispatchTouchEvent(UITouchPhaseBegan, pt, 1);
         bool keepGoing = token == 0
@@ -454,7 +476,8 @@ namespace TouchEngine {
     }
 
     void SwipeSkillToward(const float normSkillPos[2], CGPoint targetScreenPt, int swipeDurationMs = 50, uint64_t token = 0) {
-        CGSize screen = [UIScreen mainScreen].bounds.size;
+        CGSize screen = CachedScreenPointSize();
+        if (screen.width <= 0.0 || screen.height <= 0.0) return;
         CGPoint startPt = ApplyJitter(CGPointMake(normSkillPos[0] * screen.width, normSkillPos[1] * screen.height));
         CGPoint playerCenter = CGPointMake(screen.width * 0.5f, screen.height * 0.5f);
 
@@ -491,7 +514,8 @@ namespace TouchEngine {
     }
 
     void SwipeSkillS2OppositeToward(const float normSkillPos[2], CGPoint targetScreenPt, int swipeDurationMs = 55, uint64_t token = 0) {
-        CGSize screen = [UIScreen mainScreen].bounds.size;
+        CGSize screen = CachedScreenPointSize();
+        if (screen.width <= 0.0 || screen.height <= 0.0) return;
         CGPoint startPt = ApplyJitter(CGPointMake(normSkillPos[0] * screen.width, normSkillPos[1] * screen.height));
         CGPoint playerCenter = CGPointMake(screen.width * 0.5f, screen.height * 0.5f);
 
@@ -528,7 +552,8 @@ namespace TouchEngine {
     }
 
     void SwipeSkillAwayFrom(const float normSkillPos[2], CGPoint targetScreenPt, int swipeDurationMs = 50, uint64_t token = 0) {
-        CGSize screen = [UIScreen mainScreen].bounds.size;
+        CGSize screen = CachedScreenPointSize();
+        if (screen.width <= 0.0 || screen.height <= 0.0) return;
         CGPoint startPt = ApplyJitter(CGPointMake(normSkillPos[0] * screen.width, normSkillPos[1] * screen.height));
         CGPoint playerCenter = CGPointMake(screen.width * 0.5f, screen.height * 0.5f);
 
@@ -681,9 +706,8 @@ namespace TouchEngine {
 namespace VisionEngine {
     static dispatch_queue_t g_VisionQueue = dispatch_queue_create("com.px.vision.queue", DISPATCH_QUEUE_SERIAL);
     static std::atomic<bool> g_IsProcessing{false};
-    static CFTimeInterval g_LastFrameTime = 0;
+    static std::atomic<double> g_LastFrameTime{0.0};
     static int g_NextTargetId = 1;
-    static id<MTLCommandQueue> g_BlitQueue = nil;
     static id<MTLBuffer> g_ReadbackBuffer = nil;
     static NSUInteger g_ReadbackBufferSize = 0;
     static std::atomic<int> g_FullScreenScanFrames{0};
@@ -742,7 +766,15 @@ namespace VisionEngine {
         return false;
     }
 
-    void ProcessFrameBuffer(const uint8_t* data, int texW, int texH, int stride, float scale) {
+    void ProcessFrameBuffer(const uint8_t* data, int texW, int texH, int stride,
+                            float scaleX, float scaleY, CGSize screenPt) {
+        if (!data || texW <= 0 || texH <= 0 ||
+            scaleX <= 0.0f || scaleY <= 0.0f ||
+            screenPt.width <= 0.0 || screenPt.height <= 0.0) {
+            g_IsProcessing.store(false, std::memory_order_release);
+            return;
+        }
+        const float detectorScale = std::sqrt(scaleX * scaleY);
         const bool fullScreenScan = g_FullScreenScanFrames.load(std::memory_order_acquire) > 0;
         if (fullScreenScan) {
             int remaining = g_FullScreenScanFrames.load(std::memory_order_relaxed);
@@ -764,8 +796,19 @@ namespace VisionEngine {
         static std::atomic<uint64_t> frameSequence{0};
         const bool runLevelOCR =
             (frameSequence.fetch_add(1, std::memory_order_relaxed) % 4u) == 0u;
-        const auto observations = HealthBarSegmenter::Detect(
-            data, texW, texH, stride, scale, rx0, ry0, rx1, ry1, runLevelOCR);
+        auto observations = HealthBarSegmenter::Detect(
+            data, texW, texH, stride, detectorScale, rx0, ry0, rx1, ry1, runLevelOCR);
+
+        // Convert the detector's isotropic point estimate with the actual
+        // horizontal and vertical drawable-to-view scales independently.
+        const float xCorrection = detectorScale / scaleX;
+        const float yCorrection = detectorScale / scaleY;
+        for (auto& observation : observations) {
+            observation.left *= xCorrection;
+            observation.width *= xCorrection;
+            observation.top *= yCorrection;
+            observation.height *= yCorrection;
+        }
 
         struct RawTarget {
             CGPoint centerPt;
@@ -869,7 +912,6 @@ namespace VisionEngine {
             g_TrackedTargets.end()
         );
 
-        CGSize screenPt = [UIScreen mainScreen].bounds.size;
         CGPoint screenCenter = CGPointMake(screenPt.width * 0.5f, screenPt.height * 0.5f);
         std::vector<TargetSelector::Candidate> selectionCandidates;
         selectionCandidates.reserve(g_TrackedTargets.size());
@@ -928,49 +970,47 @@ namespace VisionEngine {
         g_IsProcessing.store(false);
     }
 
-    void SubmitMetalTextureAsync(id<MTLTexture> texture) {
-        if (!ShouldCapture() || !texture) return;
+    void SubmitMetalTextureAsync(id<MTLTexture> texture,
+                                  id<MTLCommandBuffer> commandBuffer) {
+        if (!ShouldCapture() || !texture || !commandBuffer) return;
         if (texture.pixelFormat != MTLPixelFormatBGRA8Unorm) return;
 
-        CFTimeInterval now = CACurrentMediaTime();
-        double minInterval = 1.0 / (double)std::max(1, g_Cfg.captureFps);
-        if ((now - g_LastFrameTime) < minInterval) return;
-        if (g_IsProcessing.exchange(true)) return;
+        const double now = CACurrentMediaTime();
+        const double minInterval = 1.0 / (double)std::max(1, g_Cfg.captureFps);
+        const double previousFrameTime = g_LastFrameTime.load(std::memory_order_relaxed);
+        if ((now - previousFrameTime) < minInterval) return;
+        if (g_IsProcessing.exchange(true, std::memory_order_acq_rel)) return;
 
-        // Every failure after acquiring the processing flag must release it.
         auto releaseProcessing = [] {
-            g_IsProcessing.store(false);
+            g_IsProcessing.store(false, std::memory_order_release);
         };
 
-        int w = (int)texture.width;
-        int h = (int)texture.height;
-        if (w <= 0 || h <= 0 || (NSUInteger)w > NSUIntegerMax / 4) {
-            NSLog(@"[PXVision] Invalid Metal texture dimensions: %d x %d", w, h);
+        const int w = (int)texture.width;
+        const int h = (int)texture.height;
+        const CGSize screenPt = CachedScreenPointSize();
+        if (w <= 0 || h <= 0 || screenPt.width <= 0.0 || screenPt.height <= 0.0 ||
+            (NSUInteger)w > NSUIntegerMax / 4) {
             releaseProcessing();
             return;
         }
 
-        NSUInteger bytesPerRow = (NSUInteger)w * 4;
-        if ((NSUInteger)h > NSUIntegerMax / bytesPerRow) {
-            NSLog(@"[PXVision] Readback size overflow: %d x %d", w, h);
+        const float scaleX = (float)w / (float)screenPt.width;
+        const float scaleY = (float)h / (float)screenPt.height;
+        if (!std::isfinite(scaleX) || !std::isfinite(scaleY) ||
+            scaleX <= 0.0f || scaleY <= 0.0f) {
             releaseProcessing();
             return;
         }
-        NSUInteger totalBytes = bytesPerRow * (NSUInteger)h;
-        float scale = (float)[UIScreen mainScreen].scale;
+
+        const NSUInteger bytesPerRow = (NSUInteger)w * 4;
+        if ((NSUInteger)h > NSUIntegerMax / bytesPerRow) {
+            releaseProcessing();
+            return;
+        }
+        const NSUInteger totalBytes = bytesPerRow * (NSUInteger)h;
 
         id<MTLDevice> device = texture.device;
-        if (!device) {
-            NSLog(@"[PXVision] Texture has no Metal device");
-            releaseProcessing();
-            return;
-        }
-
-        if (!g_BlitQueue || g_BlitQueue.device != device) {
-            g_BlitQueue = [device newCommandQueue];
-        }
-        if (!g_BlitQueue) {
-            NSLog(@"[PXVision] Failed to create blit command queue");
+        if (!device || commandBuffer.commandQueue.device != device) {
             releaseProcessing();
             return;
         }
@@ -980,8 +1020,6 @@ namespace VisionEngine {
             id<MTLBuffer> newBuffer =
                 [device newBufferWithLength:totalBytes options:MTLResourceStorageModeShared];
             if (!newBuffer) {
-                NSLog(@"[PXVision] Failed to allocate readback buffer (%lu bytes)",
-                      (unsigned long)totalBytes);
                 releaseProcessing();
                 return;
             }
@@ -989,23 +1027,15 @@ namespace VisionEngine {
             g_ReadbackBufferSize = totalBytes;
         }
 
-        // Keep this exact buffer alive until the GPU completion handler has
-        // finished consuming it; do not dereference a mutable global there.
         id<MTLBuffer> readbackBuffer = g_ReadbackBuffer;
-        id<MTLCommandBuffer> cmdBuf = [g_BlitQueue commandBuffer];
-        if (!cmdBuf) {
-            NSLog(@"[PXVision] Failed to create blit command buffer");
-            releaseProcessing();
-            return;
-        }
-
-        id<MTLBlitCommandEncoder> blit = [cmdBuf blitCommandEncoder];
+        id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
         if (!blit) {
-            NSLog(@"[PXVision] Failed to create blit encoder");
             releaseProcessing();
             return;
         }
 
+        // Encode on the presenting command buffer: render writes are ordered
+        // before this blit, and presentation waits for the command buffer.
         [blit copyFromTexture:texture
                   sourceSlice:0
                   sourceLevel:0
@@ -1017,28 +1047,60 @@ namespace VisionEngine {
      destinationBytesPerImage:totalBytes];
         [blit endEncoding];
 
-        g_LastFrameTime = now;
-        [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> _Nonnull buffer) {
+        g_LastFrameTime.store(now, std::memory_order_relaxed);
+        [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> _Nonnull buffer) {
             if (buffer.status == MTLCommandBufferStatusCompleted) {
                 const uint8_t* ptr = (const uint8_t*)[readbackBuffer contents];
                 if (ptr) {
                     dispatch_async(g_VisionQueue, ^{
-                        ProcessFrameBuffer(ptr, w, h, (int)bytesPerRow, scale);
+                        ProcessFrameBuffer(ptr, w, h, (int)bytesPerRow,
+                                           scaleX, scaleY, screenPt);
                     });
                     return;
                 }
-                NSLog(@"[PXVision] Readback buffer contents unavailable");
-            } else {
-                NSLog(@"[PXVision] GPU blit failed (status=%ld, error=%@)",
-                      (long)buffer.status, buffer.error);
             }
             releaseProcessing();
         }];
-        [cmdBuf commit];
     }
 }
 
 // ============================================================================
+static void (*orig_commandBufferCommit)(id, SEL) = nullptr;
+
+static void hooked_commandBufferCommit(id self, SEL _cmd) {
+    SEL presentedDrawableSel = sel_registerName("presentedDrawable");
+    if (VisionEngine::ShouldCapture() && [self respondsToSelector:presentedDrawableSel]) {
+        id<CAMetalDrawable> drawable =
+            ((id (*)(id, SEL))objc_msgSend)(self, presentedDrawableSel);
+        CAMetalLayer *layer = drawable.layer;
+        if (drawable.texture && layer && ![layer.name isEqualToString:@"PXOverlayLayer"]) {
+            VisionEngine::SubmitMetalTextureAsync(drawable.texture,
+                                                  (id<MTLCommandBuffer>)self);
+        }
+    }
+    if (orig_commandBufferCommit) orig_commandBufferCommit(self, _cmd);
+}
+
+static void InstallCommandBufferCommitHook(id<MTLDevice> device) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        id<MTLCommandQueue> queue = [device newCommandQueue];
+        id<MTLCommandBuffer> probe = [queue commandBuffer];
+        if (!probe) return;
+
+        Class commandBufferClass = object_getClass(probe);
+        Method commitMethod = class_getInstanceMethod(commandBufferClass, @selector(commit));
+        if (!commandBufferClass || !commitMethod) return;
+
+        orig_commandBufferCommit = (void (*)(id, SEL))method_getImplementation(commitMethod);
+        const char *types = method_getTypeEncoding(commitMethod);
+        if (!class_addMethod(commandBufferClass, @selector(commit),
+                             (IMP)hooked_commandBufferCommit, types)) {
+            method_setImplementation(commitMethod, (IMP)hooked_commandBufferCommit);
+        }
+    });
+}
+
 // SWIZZLE CAMETALLAYER
 // ============================================================================
 static id<CAMetalDrawable> (*orig_nextDrawable)(id self, SEL _cmd);
@@ -1059,10 +1121,9 @@ static id<CAMetalDrawable> hooked_nextDrawable(id self, SEL _cmd) {
     }
 
     id<CAMetalDrawable> drawable = orig_nextDrawable(self, _cmd);
-    if (drawable && drawable.texture && VisionEngine::ShouldCapture()) {
-        if (![layer.name isEqualToString:@"PXOverlayLayer"]) {
-            VisionEngine::SubmitMetalTextureAsync(drawable.texture);
-        }
+    if (drawable && drawable.texture && VisionEngine::ShouldCapture() &&
+        ![layer.name isEqualToString:@"PXOverlayLayer"]) {
+        InstallCommandBufferCommitHook(drawable.texture.device);
     }
     return drawable;
 }
@@ -1125,6 +1186,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor clearColor];
+    UpdateCachedScreenPointSize(self.view.bounds.size);
 
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     if (!device) {
@@ -1206,8 +1268,15 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     [self updateQuickButtonHighlights];
 }
 
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    UpdateCachedScreenPointSize(self.view.bounds.size);
+    [self syncControlButtonFramesFromConfig];
+}
+
 - (void)syncControlButtonFramesFromConfig {
     CGSize size = self.view.bounds.size;
+    if (size.width <= 0.0 || size.height <= 0.0) return;
     const CGFloat d = 42.0f;
     self.floatingToggleBtn.center = CGPointMake(g_Cfg.floatingTogglePos[0] * size.width, g_Cfg.floatingTogglePos[1] * size.height);
     self.menuToggleBtn.center = CGPointMake(g_Cfg.menuTogglePos[0] * size.width, g_Cfg.menuTogglePos[1] * size.height);
