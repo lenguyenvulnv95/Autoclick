@@ -517,22 +517,20 @@ namespace TouchEngine {
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
             switch (comboType) {
                 case NakComboType::GANK_LONG_RANGE: {
+                    // C1: S2 (vuot nguoc) -> S1 -> S1 lan 2 -> S3 -> AA
                     SwipeSkillS2OppositeToward(g_Cfg.skill2Pos, targetPt, 55);
                     usleep(ApplyDelayJitter(g_Cfg.delayAfterS2Ms) * 1000);
 
-                    TapAt(g_Cfg.attackPos, 28);
-                    usleep(ApplyDelayJitter(g_Cfg.delayAfterEmpAAMs) * 1000);
-
                     SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50);
                     usleep(ApplyDelayJitter(g_Cfg.delayAfterS1_1Ms) * 1000);
+
+                    SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50);
+                    usleep(ApplyDelayJitter(g_Cfg.delayAfterS1_2Ms) * 1000);
 
                     TapAt(g_Cfg.skill3Pos, 35);
                     usleep(ApplyDelayJitter(g_Cfg.delayAfterS3Ms) * 1000);
 
                     TapAt(g_Cfg.attackPos, 28);
-                    usleep(90 * 1000);
-
-                    SwipeSkillToward(g_Cfg.skill1Pos, targetPt, 50);
                     break;
                 }
                 case NakComboType::CLOSE_COMBAT: {
@@ -1213,7 +1211,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
                 g_Cfg.selectedCombo = NakComboType::GANK_LONG_RANGE;
                 [self updateQuickButtonHighlights];
             }
-            ImGui::SameLine(); ImGui::TextDisabled("(S2 -> AA -> S1 -> S3 -> AA -> S1)");
+            ImGui::SameLine(); ImGui::TextDisabled("(S2 -> S1 -> S1 -> S3 -> AA)");
 
             if (ImGui::RadioButton("C2: Dich o gan", &comboVal, 2)) {
                 g_Cfg.selectedCombo = NakComboType::CLOSE_COMBAT;
