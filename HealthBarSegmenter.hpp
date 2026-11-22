@@ -31,7 +31,7 @@ struct RowStats {
 };
 
 inline bool IsDarkTrackPixel(uint8_t b, uint8_t g, uint8_t r) {
-    return std::max((int)r, std::max((int)g, (int)b)) < 88;
+    return std::max((int)r, std::max((int)g, (int)b)) < 48;
 }
 
 inline std::vector<BarObservation> Detect(const uint8_t* bgra,
@@ -125,7 +125,7 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
             if (maxX < minX) continue;
             const int fillWidth = maxX - minX + 1;
             if (fillWidth < std::max(8, (int)std::round(8.0f * scale))) continue;
-            if ((float)fillWidth / (float)bandHeight < 2.0f) continue;
+            if ((float)fillWidth / (float)bandHeight < 1.2f) continue;
 
             const int sampleY = (bandTop + bandBottom) / 2;
             int darkTrackPixels = 0;
@@ -221,9 +221,10 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
                 observation.level = level;
                 observation.levelConfidence = levelConfidence;
                 observation.confidence = std::min(classification.confidence, hp.confidence);
-                if (observation.kind == TargetClassifier::TargetKind::EnemyHero) {
-                    output.push_back(observation);
-                }
+                // Keep unknown red candidates in the diagnostic output so the
+                // reference-image tests can reveal OCR misses; callers must filter
+                // by kind before adding anything to the live target tracker.
+                output.push_back(observation);
             } else {
                 TargetClassifier::CandidateFeatures features;
                 features.width = (float)baseWidth;
