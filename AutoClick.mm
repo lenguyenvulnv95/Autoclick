@@ -75,7 +75,7 @@ extern "C" {
 // ============================================================================
 enum class NakComboType {
     GANK_LONG_RANGE = 1,    // C1: Gank tầm xa — S2, S1 hướng mục tiêu hai lần, S3, AA
-    CLOSE_COMBAT    = 2,    // C2: Cận chiến — S1, AA, S3, S2, S1, AA
+    CLOSE_COMBAT    = 2,    // C2: Cận chiến — S1, AA, S3, S2
     POKE_AND_RUN    = 3     // C3: Cấu rỉa rồi rút lui — S1 lần hai ngược hướng mục tiêu
 };
 
@@ -301,22 +301,73 @@ static std::atomic<float> g_VisionMeasuredFps{0.0f};
 // BỘ TỔNG HỢP CHẠM & VUỐT (IOHIDEVENT + UNITY VIEW TARGETING + NAK COMBOS)
 // ============================================================================
 namespace TouchEngine {
-    static std::atomic<uint64_t> g_HoldGeneration{0};
+    enum class ActionMode {
+        NONE,
+        AUTOMATIC,
+        HELD
+    };
+
+    static std::mutex g_ActionMutex;
+    static std::atomic<uint64_t> g_ActionGeneration{0};
+    static std::atomic<ActionMode> g_ActionMode{ActionMode::NONE};
+    static dispatch_queue_t g_ActionQueue =
+        dispatch_queue_create("com.px.touch.actions", DISPATCH_QUEUE_SERIAL);
     static thread_local std::mt19937 rng(std::random_device{}());
 
-    bool HoldIsActive(uint64_t token) {
-        return token != 0 && g_HoldGeneration.load(std::memory_order_acquire) == token;
+    bool ActionIsActive(uint64_t token) {
+        return token != 0 &&
+               g_MasterEnable.load(std::memory_order_acquire) &&
+               g_ActionGeneration.load(std::memory_order_acquire) == token;
     }
 
-    bool WaitForHold(uint64_t token, int milliseconds) {
+    bool WaitForAction(uint64_t token, int milliseconds) {
         int remaining = std::max(0, milliseconds);
         while (remaining > 0) {
-            if (!HoldIsActive(token)) return false;
+            if (!ActionIsActive(token)) return false;
             int slice = std::min(remaining, 5);
             usleep(slice * 1000);
             remaining -= slice;
         }
-        return HoldIsActive(token);
+        return ActionIsActive(token);
+    }
+
+    uint64_t BeginHeldAction() {
+        std::lock_guard<std::mutex> lock(g_ActionMutex);
+        if (!g_MasterEnable.load(std::memory_order_acquire)) return 0;
+
+        // A deliberate press-and-hold takes ownership from Auto-Engage.
+        const uint64_t token = g_ActionGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+        g_ActionMode.store(ActionMode::HELD, std::memory_order_release);
+        g_BotState.store(BotState::EXECUTING, std::memory_order_release);
+        return token;
+    }
+
+    uint64_t BeginAutomaticAction() {
+        std::lock_guard<std::mutex> lock(g_ActionMutex);
+        if (!g_MasterEnable.load(std::memory_order_acquire) ||
+            g_ActionMode.load(std::memory_order_acquire) != ActionMode::NONE) {
+            return 0;
+        }
+
+        const uint64_t token = g_ActionGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+        g_ActionMode.store(ActionMode::AUTOMATIC, std::memory_order_release);
+        g_BotState.store(BotState::EXECUTING, std::memory_order_release);
+        return token;
+    }
+
+    void FinishAction(uint64_t token) {
+        std::lock_guard<std::mutex> lock(g_ActionMutex);
+        if (token == 0 || g_ActionGeneration.load(std::memory_order_acquire) != token) return;
+
+        g_ActionMode.store(ActionMode::NONE, std::memory_order_release);
+        g_BotState.store(g_MasterEnable.load(std::memory_order_acquire)
+            ? BotState::SCANNING
+            : BotState::IDLE,
+            std::memory_order_release);
+    }
+
+    bool IsHeldActionActive() {
+        return g_ActionMode.load(std::memory_order_acquire) == ActionMode::HELD;
     }
     static NSMutableDictionary<NSNumber *, UITouch *> *g_ActiveTouches = nil;
 
@@ -498,18 +549,18 @@ namespace TouchEngine {
         }
     }
 
-    void TapAt(const float normPos[2], int holdMs = 30, uint64_t token = 0) {
+    void TapAt(const float normPos[2], int holdMs, uint64_t token) {
+        if (!ActionIsActive(token)) return;
         CGSize screen = CachedScreenPointSize();
         if (screen.width <= 0.0 || screen.height <= 0.0) return;
         CGPoint pt = ApplyJitter(CGPointMake(normPos[0] * screen.width, normPos[1] * screen.height));
         DispatchTouchEvent(UITouchPhaseBegan, pt, 1);
-        bool keepGoing = token == 0
-            ? (usleep(ApplyDelayJitter(holdMs) * 1000), true)
-            : WaitForHold(token, ApplyDelayJitter(holdMs));
+        bool keepGoing = WaitForAction(token, ApplyDelayJitter(holdMs));
         DispatchTouchEvent(keepGoing ? UITouchPhaseEnded : UITouchPhaseCancelled, pt, 1);
     }
 
-    void SwipeSkillToward(const float normSkillPos[2], CGPoint targetScreenPt, int swipeDurationMs = 50, uint64_t token = 0) {
+    void SwipeSkillToward(const float normSkillPos[2], CGPoint targetScreenPt, int swipeDurationMs, uint64_t token) {
+        if (!ActionIsActive(token)) return;
         CGSize screen = CachedScreenPointSize();
         if (screen.width <= 0.0 || screen.height <= 0.0) return;
         CGPoint startPt = ApplyJitter(CGPointMake(normSkillPos[0] * screen.width, normSkillPos[1] * screen.height));
@@ -535,9 +586,7 @@ namespace TouchEngine {
                 startPt.x + (endPt.x - startPt.x) * t,
                 startPt.y + (endPt.y - startPt.y) * t
             );
-            bool keepGoing = token == 0
-                ? (usleep(stepDelayUs), true)
-                : WaitForHold(token, std::max(1, stepDelayUs / 1000));
+            bool keepGoing = WaitForAction(token, std::max(1, stepDelayUs / 1000));
             if (!keepGoing) {
                 DispatchTouchEvent(UITouchPhaseCancelled, mid, 2);
                 return;
@@ -547,7 +596,8 @@ namespace TouchEngine {
         DispatchTouchEvent(UITouchPhaseEnded, endPt, 2);
     }
 
-    void SwipeSkillS2OppositeToward(const float normSkillPos[2], CGPoint targetScreenPt, int swipeDurationMs = 55, uint64_t token = 0) {
+    void SwipeSkillS2OppositeToward(const float normSkillPos[2], CGPoint targetScreenPt, int swipeDurationMs, uint64_t token) {
+        if (!ActionIsActive(token)) return;
         CGSize screen = CachedScreenPointSize();
         if (screen.width <= 0.0 || screen.height <= 0.0) return;
         CGPoint startPt = ApplyJitter(CGPointMake(normSkillPos[0] * screen.width, normSkillPos[1] * screen.height));
@@ -573,9 +623,7 @@ namespace TouchEngine {
                 startPt.x + (endPt.x - startPt.x) * t,
                 startPt.y + (endPt.y - startPt.y) * t
             );
-            bool keepGoing = token == 0
-                ? (usleep(stepDelayUs), true)
-                : WaitForHold(token, std::max(1, stepDelayUs / 1000));
+            bool keepGoing = WaitForAction(token, std::max(1, stepDelayUs / 1000));
             if (!keepGoing) {
                 DispatchTouchEvent(UITouchPhaseCancelled, mid, 2);
                 return;
@@ -585,7 +633,8 @@ namespace TouchEngine {
         DispatchTouchEvent(UITouchPhaseEnded, endPt, 2);
     }
 
-    void SwipeSkillAwayFrom(const float normSkillPos[2], CGPoint targetScreenPt, int swipeDurationMs = 50, uint64_t token = 0) {
+    void SwipeSkillAwayFrom(const float normSkillPos[2], CGPoint targetScreenPt, int swipeDurationMs, uint64_t token) {
+        if (!ActionIsActive(token)) return;
         CGSize screen = CachedScreenPointSize();
         if (screen.width <= 0.0 || screen.height <= 0.0) return;
         CGPoint startPt = ApplyJitter(CGPointMake(normSkillPos[0] * screen.width, normSkillPos[1] * screen.height));
@@ -611,9 +660,7 @@ namespace TouchEngine {
                 startPt.x + (endPt.x - startPt.x) * t,
                 startPt.y + (endPt.y - startPt.y) * t
             );
-            bool keepGoing = token == 0
-                ? (usleep(stepDelayUs), true)
-                : WaitForHold(token, std::max(1, stepDelayUs / 1000));
+            bool keepGoing = WaitForAction(token, std::max(1, stepDelayUs / 1000));
             if (!keepGoing) {
                 DispatchTouchEvent(UITouchPhaseCancelled, mid, 2);
                 return;
@@ -625,8 +672,8 @@ namespace TouchEngine {
 
     void RunComboSequence(CGPoint targetPt, NakComboType comboType, uint64_t token) {
         const Config cfg = GetConfigSnapshot();
-        auto active = [&]() { return token == 0 || HoldIsActive(token); };
-        auto delay = [&](int ms) { return token == 0 ? (usleep(std::max(0, ms) * 1000), true) : WaitForHold(token, ms); };
+        auto active = [&]() { return ActionIsActive(token); };
+        auto delay = [&](int ms) { return WaitForAction(token, ms); };
 
         switch (comboType) {
             case NakComboType::GANK_LONG_RANGE:
@@ -644,7 +691,7 @@ namespace TouchEngine {
                 break;
 
             case NakComboType::CLOSE_COMBAT:
-                // C2 — Cận chiến: S1 hướng mục tiêu -> AA -> S3 -> S2 ngược hướng mục tiêu -> S1 hướng mục tiêu -> AA
+                // C2 — Cận chiến: S1 hướng mục tiêu -> AA -> S3 -> S2 ngược hướng mục tiêu
                 if (!active()) return;
                 SwipeSkillToward(cfg.skill1Pos, targetPt, 50, token);
                 if (!delay(ApplyDelayJitter(cfg.delayAfterS1_1Ms))) return;
@@ -652,11 +699,7 @@ namespace TouchEngine {
                 if (!delay(ApplyDelayJitter(cfg.delayAfterEmpAAMs))) return;
                 TapAt(cfg.skill3Pos, 35, token);
                 if (!delay(ApplyDelayJitter(cfg.delayAfterS3Ms))) return;
-                SwipeSkillS2OppositeToward(cfg.skill2Pos, targetPt, 55, token);
-                if (!delay(ApplyDelayJitter(cfg.delayAfterS2Ms))) return;
-                SwipeSkillToward(cfg.skill1Pos, targetPt, 50, token);
-                if (!delay(90)) return;
-                if (active()) TapAt(cfg.attackPos, 28, token);
+                if (active()) SwipeSkillS2OppositeToward(cfg.skill2Pos, targetPt, 55, token);
                 break;
 
             case NakComboType::POKE_AND_RUN:
@@ -674,10 +717,11 @@ namespace TouchEngine {
     }
 
     void StartHeldComboForTarget(int targetId, NakComboType comboType) {
-        const uint64_t token = g_HoldGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        const uint64_t token = BeginHeldAction();
+        if (token == 0) return;
+        dispatch_async(g_ActionQueue, ^{
             int activeTargetId = targetId;
-            while (HoldIsActive(token)) {
+            while (ActionIsActive(token)) {
                 CGPoint targetPt = CGPointZero;
                 bool targetPresent = false;
                 {
@@ -694,33 +738,49 @@ namespace TouchEngine {
                     }
                 }
                 if (!targetPresent && activeTargetId < 0) {
-                    if (!WaitForHold(token, 50)) break;
+                    if (!WaitForAction(token, 50)) break;
                     continue;
                 }
                 // Keep attacking this exact target; never silently switch to another hero.
                 if (!targetPresent) break;
                 RunComboSequence(targetPt, comboType, token);
-                if (!WaitForHold(token, 70)) break;
+                if (!WaitForAction(token, 70)) break;
             }
-            uint64_t expected = token;
-            g_HoldGeneration.compare_exchange_strong(expected, token + 1, std::memory_order_acq_rel);
+            FinishAction(token);
         });
     }
 
+    void StopAllActions() {
+        std::lock_guard<std::mutex> lock(g_ActionMutex);
+        g_ActionGeneration.fetch_add(1, std::memory_order_acq_rel);
+        g_ActionMode.store(ActionMode::NONE, std::memory_order_release);
+        g_BotState.store(g_MasterEnable.load(std::memory_order_acquire)
+            ? BotState::SCANNING
+            : BotState::IDLE,
+            std::memory_order_release);
+    }
+
     void StopHeldAction() {
-        g_HoldGeneration.fetch_add(1, std::memory_order_acq_rel);
+        std::lock_guard<std::mutex> lock(g_ActionMutex);
+        if (g_ActionMode.load(std::memory_order_acquire) != ActionMode::HELD) return;
+
+        g_ActionGeneration.fetch_add(1, std::memory_order_acq_rel);
+        g_ActionMode.store(ActionMode::NONE, std::memory_order_release);
+        g_BotState.store(g_MasterEnable.load(std::memory_order_acquire)
+            ? BotState::SCANNING
+            : BotState::IDLE,
+            std::memory_order_release);
     }
 
     void ExecuteNakSelectedCombo(CGPoint targetPt, NakComboType comboType, bool isManualTrigger = false) {
-        BotState prevState = g_BotState.load();
-        if (prevState == BotState::EXECUTING) return;
-        if (!isManualTrigger && prevState == BotState::IDLE) return;
-        if (!g_BotState.compare_exchange_strong(prevState, BotState::EXECUTING)) return;
+        (void)isManualTrigger;
+        const uint64_t token = BeginAutomaticAction();
+        if (token == 0) return;
 
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-            RunComboSequence(targetPt, comboType, 0);
-            usleep(60 * 1000);
-            g_BotState.store(GetConfigSnapshot().masterEnable ? BotState::SCANNING : BotState::IDLE);
+        dispatch_async(g_ActionQueue, ^{
+            RunComboSequence(targetPt, comboType, token);
+            WaitForAction(token, 60);
+            FinishAction(token);
         });
     }
 }
@@ -1042,7 +1102,7 @@ namespace VisionEngine {
         if (chosenTarget) g_CurrentLockedId = chosenTarget->id;
         else g_CurrentLockedId = -1;
 
-        const int engageGate = !cfg.autoEngage ? 1 :
+        const int engageGate = !cfg.masterEnable || !cfg.autoEngage ? 1 :
             !chosenTarget ? 2 :
             chosenTarget->level <= 0 ? 3 :
             chosenTarget->detectionConfidence < 0.75f ? 4 :
@@ -1050,7 +1110,9 @@ namespace VisionEngine {
         g_AutoEngageGate.store(engageGate, std::memory_order_release);
         if (chosenTarget && chosenTarget->level > 0 &&
             chosenTarget->detectionConfidence >= 0.75f &&
-            cfg.autoEngage && g_BotState.load() != BotState::EXECUTING) {
+            cfg.masterEnable && cfg.autoEngage &&
+            g_BotState.load() != BotState::EXECUTING &&
+            !TouchEngine::IsHeldActionActive()) {
             g_BotState.store(BotState::LOCKED);
             CGPoint bodyAimPoint = CGPointMake(
                 chosenTarget->center.x, chosenTarget->center.y + 42.0f);
@@ -1572,7 +1634,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 
 - (void)onQuickAAStart:(UIButton *)sender {
     const Config cfg = GetConfigSnapshot();
-    if (!cfg.masterEnable) {
+    if (!cfg.masterEnable || g_ShowImGuiMenu) {
         objc_setAssociatedObject(sender, "isActive", @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [self updateQuickButtonHighlights];
         return;
@@ -1614,7 +1676,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
     g_Cfg.masterEnable = !g_Cfg.masterEnable;
     g_MasterEnable.store(g_Cfg.masterEnable, std::memory_order_release);
     if (!g_Cfg.masterEnable) {
-        TouchEngine::StopHeldAction();
+        TouchEngine::StopAllActions();
         objc_setAssociatedObject(self.btnAA, "isActive", @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [self updateQuickButtonHighlights];
     }
@@ -1628,6 +1690,10 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
 
 - (void)onToggleMenu {
     g_ShowImGuiMenu = !g_ShowImGuiMenu;
+    if (g_ShowImGuiMenu) {
+        TouchEngine::StopHeldAction();
+        objc_setAssociatedObject(self.btnAA, "isActive", @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     if (!g_ShowImGuiMenu) {
         g_ImGuiWindowRect = CGRectZero;
         g_ImGuiMouseReleasePending.store(false, std::memory_order_release);
@@ -1749,7 +1815,7 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
                 g_Cfg.selectedCombo = NakComboType::CLOSE_COMBAT;
                 [self updateQuickButtonHighlights];
             }
-            ImGui::SameLine(); ImGui::TextDisabled("(S1 hướng mục tiêu -> AA -> S3 -> S2 ngược hướng -> S1 hướng mục tiêu -> AA)");
+            ImGui::SameLine(); ImGui::TextDisabled("(S1 hướng mục tiêu -> AA -> S3 -> S2 ngược hướng)");
 
             if (ImGui::RadioButton("C3: Cấu rỉa rồi rút lui", &comboVal, 3)) {
                 g_Cfg.selectedCombo = NakComboType::POKE_AND_RUN;
