@@ -101,7 +101,7 @@ bool RecognizeLevelFromBGRA(const uint8_t* bgra,
             if (!utf8) continue;
             int parsedLevel = 0;
             if (!ParseLevelText(std::string(utf8), &parsedLevel)) continue;
-            if (!HealthBarDetector::IsValidHeroLevel(parsedLevel)) continue;
+            if (parsedLevel < 1 || parsedLevel > 16) continue;
 
             const float confidence = candidate.confidence;
             if (confidence > bestConfidence) {
