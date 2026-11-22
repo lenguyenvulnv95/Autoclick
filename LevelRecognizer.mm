@@ -55,17 +55,36 @@ bool RecognizeLevelFromBGRA(const uint8_t* bgra,
     CGImageRelease(fullImage);
     if (!cropImage) return false;
 
+    const size_t scaledWidth = (size_t)CGImageGetWidth(cropImage) * 3;
+    const size_t scaledHeight = (size_t)CGImageGetHeight(cropImage) * 3;
+    CGColorSpaceRef scaledColorSpace = CGColorSpaceCreateDeviceRGB();
+    CGContextRef scaledContext = CGBitmapContextCreate(
+        nullptr, scaledWidth, scaledHeight, 8, 0, scaledColorSpace,
+        kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst);
+    CGColorSpaceRelease(scaledColorSpace);
+    if (!scaledContext) {
+        CGImageRelease(cropImage);
+        return false;
+    }
+    CGContextSetInterpolationQuality(scaledContext, kCGInterpolationHigh);
+    CGContextDrawImage(scaledContext,
+                       CGRectMake(0, 0, scaledWidth, scaledHeight), cropImage);
+    CGImageRef scaledCrop = CGBitmapContextCreateImage(scaledContext);
+    CGContextRelease(scaledContext);
+    CGImageRelease(cropImage);
+    if (!scaledCrop) return false;
+
     VNRecognizeTextRequest* request = [[VNRecognizeTextRequest alloc] init];
     request.recognitionLevel = VNRequestTextRecognitionLevelAccurate;
     request.usesLanguageCorrection = NO;
-    request.minimumTextHeight = 0.015;
+    request.minimumTextHeight = 0.003;
     request.recognitionLanguages = @[@"en-US"];
 
     VNImageRequestHandler* handler =
-        [[VNImageRequestHandler alloc] initWithCGImage:cropImage options:@{}];
+        [[VNImageRequestHandler alloc] initWithCGImage:scaledCrop options:@{}];
     NSError* error = nil;
     BOOL performed = [handler performRequests:@[request] error:&error];
-    CGImageRelease(cropImage);
+    CGImageRelease(scaledCrop);
     if (!performed || error || request.results.count == 0) return false;
 
     float bestConfidence = 0.0f;
