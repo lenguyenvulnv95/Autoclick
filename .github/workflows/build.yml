@@ -26,6 +26,11 @@ jobs:
           clang++ -std=c++17 -Wall -Wextra -Werror -I. tests/TargetClassifierTests.cpp -o /tmp/target-classifier-tests
           /tmp/target-classifier-tests
 
+      - name: Test HPAnalyzer
+        run: |
+          clang++ -std=c++17 -Wall -Wextra -Werror -I. tests/HPAnalyzerTests.cpp -o /tmp/hp-analyzer-tests
+          /tmp/hp-analyzer-tests
+
       - name: Compile AutoClick.dylib
         run: |
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
