@@ -34,6 +34,40 @@ inline bool IsDarkTrackPixel(uint8_t b, uint8_t g, uint8_t r) {
     return std::max((int)r, std::max((int)g, (int)b)) < 48;
 }
 
+inline bool HasLevelBadgeShape(const uint8_t* bgra,
+                               int width,
+                               int height,
+                               int stride,
+                               int x0,
+                               int y0,
+                               int cropWidth,
+                               int cropHeight) {
+    if (!bgra || cropWidth <= 0 || cropHeight <= 0) return false;
+    int minX = x0 + cropWidth, maxX = x0 - 1;
+    int minY = y0 + cropHeight, maxY = y0 - 1;
+    int yellowPixels = 0;
+    const int x1 = std::min(width, x0 + cropWidth);
+    const int y1 = std::min(height, y0 + cropHeight);
+    for (int y = std::max(0, y0); y < y1; ++y) {
+        const uint8_t* row = bgra + (size_t)y * stride;
+        for (int x = std::max(0, x0); x < x1; ++x) {
+            const uint8_t* p = row + (size_t)x * 4;
+            if (HealthBarDetector::ClassifyPixel(p[0], p[1], p[2]) ==
+                HealthBarDetector::PixelClass::TowerHpYellow) {
+                ++yellowPixels;
+                minX = std::min(minX, x); maxX = std::max(maxX, x);
+                minY = std::min(minY, y); maxY = std::max(maxY, y);
+            }
+        }
+    }
+    if (yellowPixels < 10 || maxX < minX || maxY < minY) return false;
+    const float badgeWidth = (float)(maxX - minX + 1);
+    const float badgeHeight = (float)(maxY - minY + 1);
+    const float aspect = badgeWidth / std::max(1.0f, badgeHeight);
+    return badgeWidth >= 12.0f && badgeHeight >= 12.0f &&
+           aspect >= 0.55f && aspect <= 1.55f;
+}
+
 inline std::vector<BarObservation> Detect(const uint8_t* bgra,
                                           int width,
                                           int height,
@@ -203,6 +237,9 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
 
                 int level = 0;
                 float levelConfidence = 0.0f;
+                const bool badgeShapeFound = HasLevelBadgeShape(
+                    bgra, width, height, stride,
+                    cropX, cropY, cropW, cropH);
                 const bool levelFound = performLevelOCR && cropW >= 16 &&
                     LevelRecognizer::RecognizeLevelFromBGRA(
                         bgra, width, height, stride,
@@ -215,7 +252,7 @@ inline std::vector<BarObservation> Detect(const uint8_t* bgra,
                 features.redCoverage = colorCoverage;
                 features.level = level;
                 features.levelConfidence = levelConfidence;
-                features.levelBadgePresent = levelFound;
+                features.levelBadgePresent = levelFound || badgeShapeFound;
 
                 const auto classification = TargetClassifier::Classify(features);
                 observation.kind = classification.kind;
