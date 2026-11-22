@@ -226,6 +226,7 @@ enum class BotState {
 static std::atomic<BotState> g_BotState{BotState::IDLE};
 static std::vector<TrackedTarget> g_TrackedTargets;
 static int g_CurrentLockedId = -1;
+static std::atomic<float> g_VisionMeasuredFps{0.0f};
 
 // ============================================================================
 // BỘ TỔNG HỢP CHẠM & VUỐT (IOHIDEVENT + UNITY VIEW TARGETING + NAK COMBOS)
@@ -857,6 +858,19 @@ namespace VisionEngine {
                 bodyAimPoint, g_Cfg.selectedCombo, false);
         }
 
+        // Measure the effective Vision processing rate over a rolling one-second window.
+        static CFTimeInterval fpsWindowStart = CACurrentMediaTime();
+        static int fpsWindowFrames = 0;
+        ++fpsWindowFrames;
+        const CFTimeInterval fpsNow = CACurrentMediaTime();
+        const CFTimeInterval fpsElapsed = fpsNow - fpsWindowStart;
+        if (fpsElapsed >= 1.0) {
+            g_VisionMeasuredFps.store((float)fpsWindowFrames / (float)fpsElapsed,
+                                      std::memory_order_relaxed);
+            fpsWindowFrames = 0;
+            fpsWindowStart = fpsNow;
+        }
+
         g_IsProcessing.store(false);
     }
 
@@ -1390,6 +1404,63 @@ static CGRect g_ImGuiWindowRect = CGRectZero;
             ImGui::SliderInt("Tan suat quet (FPS)", &g_Cfg.captureFps, 6, 20);
             ImGui::SliderFloat("Chieu rong HP chuan (px)", &g_Cfg.standardHpWidth, 40.0f, 110.0f, "%.0f");
             ImGui::SliderInt("Temporal Confirm Frames", &g_Cfg.minConfirmFrames, 1, 6);
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Vision Monitor")) {
+            ImGui::Text("VISION REAL-TIME MONITOR");
+            ImGui::Separator();
+
+            const BotState state = g_BotState.load(std::memory_order_relaxed);
+            const char* stateName = "IDLE";
+            switch (state) {
+                case BotState::IDLE: stateName = "IDLE"; break;
+                case BotState::SCANNING: stateName = "SCANNING"; break;
+                case BotState::LOCKED: stateName = "LOCKED"; break;
+                case BotState::EXECUTING: stateName = "EXECUTING"; break;
+            }
+            ImGui::Text("Bot State: %s", stateName);
+            ImGui::Text("Master: %s | Auto-Engage: %s",
+                        g_Cfg.masterEnable ? "ON" : "OFF",
+                        g_Cfg.autoEngage ? "ON" : "OFF");
+            ImGui::Text("Vision FPS (processed): %.1f",
+                        g_VisionMeasuredFps.load(std::memory_order_relaxed));
+
+            std::vector<TrackedTarget> monitorTargets;
+            int lockedTargetId = -1;
+            {
+                std::lock_guard<std::mutex> lock(g_StateMutex);
+                monitorTargets = g_TrackedTargets;
+                lockedTargetId = g_CurrentLockedId;
+            }
+
+            ImGui::Text("Tracked targets: %d | Locked ID: %d",
+                        (int)monitorTargets.size(), lockedTargetId);
+            ImGui::Separator();
+
+            if (monitorTargets.empty()) {
+                ImGui::TextDisabled("Chua phat hien muc tieu nao.");
+            } else {
+                ImGui::Text("ID   LEVEL   HP%%   CONF   FRAMES   POSITION");
+                for (const auto& target : monitorTargets) {
+                    const bool locked = target.id == lockedTargetId;
+                    if (locked) ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 90, 90, 255));
+                    ImGui::Text("%-3d  L%-2d     %5.1f  %4.2f   %3d/%-2d   %.0f, %.0f%s",
+                                target.id,
+                                target.level,
+                                target.hpPercent,
+                                target.detectionConfidence,
+                                target.consecutiveFrames,
+                                target.missingFrames,
+                                target.center.x,
+                                target.center.y,
+                                locked ? "  [LOCKED]" : "");
+                    if (locked) ImGui::PopStyleColor();
+                }
+            }
+            ImGui::Separator();
+            ImGui::TextDisabled("FPS la so frame Vision xu ly thanh cong, khong phai FPS render cua game.");
+            ImGui::TextDisabled("CONF la do tin cay nhan dien; FRAMES la so frame lien tiep / frame bi mat.");
             ImGui::EndTabItem();
         }
 
